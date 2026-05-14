@@ -23,6 +23,7 @@ dev = [
   "pytest>=8.0",
   "pytest-cov>=4.1",
   "ruff>=0.5",
+  "moto[s3]>=5.0",  # in-process S3 mock for contract tests
 ]
 
 [project.scripts]

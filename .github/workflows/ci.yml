@@ -18,8 +18,10 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Lint
         run: ruff check src tests
-      - name: Test
-        run: pytest tests -v
+      - name: Unit tests
+        run: pytest tests/unit -v
+      - name: Contract tests (moto S3)
+        run: pytest tests/integration -v
 
   docker:
     runs-on: ubuntu-latest
