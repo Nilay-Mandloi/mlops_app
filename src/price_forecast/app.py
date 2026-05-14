@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from functools import wraps
 from typing import Any
 
 import pandas as pd
 import typer
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 from loguru import logger
 from pydantic import ValidationError
 
@@ -82,6 +83,37 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
     flask_app = Flask(__name__)
     flask_app.config["APP_CFG"] = cfg
     flask_app.config["MODEL_STORE"] = store
+
+    # ----- request lifecycle hooks (structured logging) -----
+
+    @flask_app.before_request
+    def _before():
+        g.request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex[:12]
+        g.start_ns = time.perf_counter_ns()
+
+    @flask_app.after_request
+    def _after(response):
+        try:
+            elapsed_ms = (time.perf_counter_ns() - g.start_ns) / 1e6
+            response.headers["X-Request-Id"] = g.request_id
+            response.headers["X-Model-Version"] = (
+                store._current.version_id if store._current is not None else "none"
+            )
+            # /health gets hammered by k8s probes — log at DEBUG, not INFO
+            log_fn = logger.debug if request.path in ("/health", "/ready") else logger.info
+            log_fn(
+                "{} {} -> {} in {:.1f}ms rid={} mv={} app={}",
+                request.method,
+                request.path,
+                response.status_code,
+                elapsed_ms,
+                g.request_id,
+                response.headers["X-Model-Version"],
+                cfg.app_id,
+            )
+        except Exception as exc:
+            logger.warning("request logging hook failed: {}", exc)
+        return response
 
     # ----- routes -----
 

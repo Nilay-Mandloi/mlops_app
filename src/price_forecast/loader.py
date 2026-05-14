@@ -13,16 +13,57 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
+import random
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import BotoCoreError, ClientError
 from loguru import logger
+
+T = TypeVar("T")
+
+_RETRYABLE_S3_CODES = frozenset({
+    "InternalError", "ServiceUnavailable", "SlowDown", "RequestTimeout",
+    "RequestTimeoutException", "ProvisionedThroughputExceededException",
+    "ThrottlingException", "Throttling", "500", "502", "503", "504",
+})
+
+
+def _retry_s3(label: str, func: Callable[[], T], *, attempts: int = 4, base_delay: float = 0.5) -> T:
+    """Exponential backoff with jitter for transient S3 errors.
+
+    Distinct from boto3's built-in retries (which cover the low-level call)
+    in that this wraps a higher-level operation — e.g. "read pointer, then
+    read manifest, then download pkl" — and retries the whole step if any
+    inner call hit a known-transient failure.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return func()
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in _RETRYABLE_S3_CODES:
+                raise
+            last_exc = exc
+        except BotoCoreError as exc:
+            last_exc = exc
+
+        if attempt == attempts - 1:
+            break
+        delay = base_delay * (2 ** attempt) + random.uniform(0, base_delay)
+        logger.warning("{} failed (attempt {}/{}): {} — retrying in {:.1f}s",
+                       label, attempt + 1, attempts, last_exc, delay)
+        time.sleep(delay)
+
+    assert last_exc is not None
+    raise last_exc
 
 from price_forecast.config import AppConfig
 from price_forecast.contracts import ArtifactManifest, PointerFile
@@ -63,7 +104,14 @@ class ModelStore:
 
     def __init__(self, config: AppConfig) -> None:
         self._cfg = config
-        self._client = boto3.client("s3", region_name=config.aws_region)
+        # boto3's built-in standard retry mode + 5 attempts handles the
+        # request-level transient errors; _retry_s3 around it wraps the
+        # whole "read pointer + manifest + pkl" sequence.
+        self._client = boto3.client(
+            "s3",
+            region_name=config.aws_region,
+            config=BotoConfig(retries={"max_attempts": 5, "mode": "standard"}),
+        )
         self._current: LoadedModel | None = None
         self._lock = threading.Lock()
 
@@ -76,19 +124,25 @@ class ModelStore:
         return f"{prefix}/{logical_key}" if prefix else logical_key
 
     def _get_json(self, logical_key: str) -> dict | None:
-        try:
-            resp = self._client.get_object(
-                Bucket=self._cfg.bucket, Key=self._full_key(logical_key)
-            )
-            return json.loads(resp["Body"].read().decode("utf-8"))
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
-                return None
-            raise
+        def _call() -> dict | None:
+            try:
+                resp = self._client.get_object(
+                    Bucket=self._cfg.bucket, Key=self._full_key(logical_key)
+                )
+                return json.loads(resp["Body"].read().decode("utf-8"))
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                    return None
+                raise
+
+        return _retry_s3(f"get_json({logical_key})", _call)
 
     def _download_to(self, logical_key: str, dest: Path) -> None:
-        self._client.download_file(
-            Bucket=self._cfg.bucket, Key=self._full_key(logical_key), Filename=str(dest)
+        _retry_s3(
+            f"download({logical_key})",
+            lambda: self._client.download_file(
+                Bucket=self._cfg.bucket, Key=self._full_key(logical_key), Filename=str(dest)
+            ),
         )
 
     # ------------------------------------------------------------------
