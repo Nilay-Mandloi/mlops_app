@@ -68,6 +68,11 @@ def publish_trigger(
         description=description,
     )
 
+    # Order is load-bearing: dataset + params first, trigger.json LAST.
+    # The puller treats trigger.json as the completion marker — its presence
+    # guarantees the other two keys are already in place. A crash mid-publish
+    # leaves an orphan dataset/params pair but no marker, so training will
+    # not pick up a half-written trigger.
     client.upload_file(
         Filename=str(dataset_path),
         Bucket=cfg.bucket,
