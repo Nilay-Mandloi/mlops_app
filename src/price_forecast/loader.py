@@ -157,11 +157,28 @@ class ModelStore:
                 )
             return self._current
 
+    def current_or_none(self) -> LoadedModel | None:
+        """Non-raising getter for status / probe endpoints."""
+        with self._lock:
+            return self._current
+
+    def try_reload(self) -> LoadedModel | None:
+        """Reload without raising. Returns None if pointer is absent (first deploy).
+
+        Re-raises on any non-LookupError failure so transient infra issues
+        are still visible via the caller's exception handling.
+        """
+        try:
+            return self.reload()
+        except LookupError as exc:
+            logger.info("No pointer yet — serving will start in standby mode: {}", exc)
+            return None
+
     def reload(self) -> LoadedModel:
         """Re-read the pointer, download the artifact if version changed, swap atomically."""
         pointer_data = self._get_json(pointer_key(self._cfg.model_name, self._cfg.channel))
         if pointer_data is None:
-            raise RuntimeError(
+            raise LookupError(
                 f"Pointer '{self._cfg.channel}' for model '{self._cfg.model_name}' not found. "
                 "Has the training pipeline run and promoted a version yet?"
             )
