@@ -22,31 +22,55 @@ swap — corrupted artifacts are refused.
 
 ## Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET    | `/health`         | Liveness probe |
-| GET    | `/ready`          | Readiness probe (model loaded) |
-| GET    | `/model/info`     | Currently-loaded version metadata |
-| POST   | `/predict`        | Single prediction |
-| POST   | `/predict/batch`  | Batch predictions |
-| POST   | `/reload`         | Re-read `stable.json` and reload (admin token) |
-| POST   | `/trigger-train`  | Push dataset + params to S3 to kick off training (admin token) |
+| Method | Path              | Description                                                            |
+|--------|-------------------|------------------------------------------------------------------------|
+| GET    | `/health`         | Liveness probe (always 200 if process is up)                           |
+| GET    | `/ready`          | Readiness probe (503 in standby — no model loaded yet)                 |
+| GET    | `/metrics`        | Prometheus-format counters and gauges                                  |
+| GET    | `/model/info`     | Currently-loaded version metadata                                      |
+| POST   | `/predict`        | Single prediction (validates features against manifest.schema_contract)|
+| POST   | `/predict/batch`  | Batch predictions (capped at `APP_MAX_BATCH_SIZE`)                     |
+| POST   | `/reload`         | Re-read pointer and reload (admin token)                               |
+| POST   | `/trigger-train`  | Push dataset + params to S3 to kick off training (admin token)         |
+
+Every response carries `X-Request-Id` (echoes the inbound header if present, else uuid) and `X-Model-Version`. Every request emits one structured log line with method, path, status, latency, request_id, model_version, app_id.
 
 ## Configuration
 
-Set via env vars:
+Required:
 
 ```
-APP_ID=app1                       # logical app identifier (multi-tenant scope)
-APP_S3_BUCKET=app1_bucket         # this app's bucket
-STACK_ID=MLOPS                    # which stack's tree to read (MLOPS today, azure later)
-APP_MODEL_NAME=price_forecast     # registered model name written by training
-APP_CHANNEL=stable                # which pointer to follow (stable | canary | latest)
-APP_ADMIN_TOKEN=...               # required for /reload and /trigger-train
+APP_ID=app1                          # logical app identifier (multi-tenant scope)
+APP_S3_BUCKET=app1_bucket            # this app's bucket
+APP_MODEL_NAME=price_forecast        # registered model name written by training
+APP_ADMIN_TOKEN=...                  # required for /reload, /trigger-train (and required in prod)
 AWS_DEFAULT_REGION=us-east-1
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
 ```
+
+Optional (with defaults):
+
+```
+STACK_ID=MLOPS                       # tree prefix; "MLOPS" today, "azure" for parallel stacks
+APP_CHANNEL=stable                   # which pointer to follow (stable | canary | latest)
+APP_HOST=0.0.0.0
+APP_PORT=8000
+APP_RELOAD_INTERVAL_S=30             # background pointer-poll interval (0 disables)
+APP_STARTUP_GRACE_SECONDS=120        # standby tolerance window logged at boot
+APP_MAX_BATCH_SIZE=1000              # /predict/batch row cap
+APP_MAX_REQUEST_BYTES=1048576        # 413 if request body exceeds
+APP_CORS_ALLOWED_ORIGINS=            # comma-separated; "*" refused in prod
+APP_STRICT_SCHEMA=1                  # reject requests with unknown columns
+ENV=prod                             # prod enforces APP_ADMIN_TOKEN and no-wildcard CORS
+LOG_FORMAT=json                      # JSON sink for log aggregators (default: human)
+```
+
+## Production behavior worth knowing
+
+- **Graceful startup.** If no `stable.json` exists yet (first deploy, before training has ever promoted), the app starts in standby mode: `/health` is 200, `/ready` is 503, `/predict` returns 503. The background reloader keeps polling; once the pointer arrives, the app flips to serving without a restart.
+- **Atomic model swap.** Reloads happen out-of-band. `/predict` requests in flight during a swap serve the previous model; new requests after the swap serve the new model. There's no in-between state.
+- **Checksum verification.** Every artifact download cross-checks `sha256(model.pkl)` against the manifest. A corrupted byte stream is refused before `pickle.load`.
+- **Retry/backoff.** Pointer + manifest + pkl reads retry on 5xx / throttling with exponential backoff (4 attempts, base 0.5s + jitter). A transient S3 blip during reload doesn't propagate to callers.
+- **Schema validation.** `/predict` cross-checks request features against the manifest's `schema_contract.feature_columns` before invoking the model. Missing / extra / null-required columns return 400 with explicit field lists.
 
 ## Local development
 

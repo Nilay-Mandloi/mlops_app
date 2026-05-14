@@ -33,6 +33,14 @@ class AppConfig:
     reload_interval_s: int
     host: str
     port: int
+    # Production knobs
+    max_batch_size: int            # cap on /predict/batch rows
+    max_request_bytes: int         # cap on request body size
+    cors_allowed_origins: str      # comma-separated list; "*" only allowed when ENV!=prod
+    env: str                       # "dev" | "prod" | "test"
+    log_format: str                # "" (default loguru) | "json"
+    strict_schema: bool            # if True, reject requests whose features don't match manifest schema
+    startup_grace_seconds: int     # serve 503 for this long if pointer absent, instead of crashing
 
     @property
     def prefix(self) -> str:
@@ -40,8 +48,14 @@ class AppConfig:
         return self.stack_id
 
 
+def _parse_bool(value: str, *, default: bool) -> bool:
+    if not value:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_config() -> AppConfig:
-    return AppConfig(
+    cfg = AppConfig(
         app_id=_require("APP_ID"),
         bucket=_require("APP_S3_BUCKET"),
         stack_id=_env("STACK_ID", "MLOPS"),
@@ -52,4 +66,22 @@ def load_config() -> AppConfig:
         reload_interval_s=int(_env("APP_RELOAD_INTERVAL_S", "30")),
         host=_env("APP_HOST", "0.0.0.0"),
         port=int(_env("APP_PORT", "8000")),
+        max_batch_size=int(_env("APP_MAX_BATCH_SIZE", "1000")),
+        max_request_bytes=int(_env("APP_MAX_REQUEST_BYTES", "1048576")),
+        cors_allowed_origins=_env("APP_CORS_ALLOWED_ORIGINS", ""),
+        env=_env("ENV", "dev").lower(),
+        log_format=_env("LOG_FORMAT", "").lower(),
+        strict_schema=_parse_bool(_env("APP_STRICT_SCHEMA"), default=True),
+        startup_grace_seconds=int(_env("APP_STARTUP_GRACE_SECONDS", "120")),
     )
+
+    if cfg.env == "prod":
+        if not cfg.admin_token:
+            raise OSError("APP_ADMIN_TOKEN is required in prod (guards /reload and /trigger-train).")
+        if "*" in cfg.cors_allowed_origins:
+            raise OSError("APP_CORS_ALLOWED_ORIGINS must not contain '*' in prod.")
+    if cfg.max_batch_size <= 0:
+        raise OSError(f"APP_MAX_BATCH_SIZE must be > 0; got {cfg.max_batch_size}.")
+    if cfg.max_request_bytes <= 0:
+        raise OSError(f"APP_MAX_REQUEST_BYTES must be > 0; got {cfg.max_request_bytes}.")
+    return cfg
