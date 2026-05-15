@@ -6,8 +6,10 @@ processor). They are the single source of truth for what fields exist on
 manifest.json, stable.json / latest.json (pointers), and trigger.json.
 
 When the Flask app is moved to its own repo, these dataclasses (plus the
-S3PointerResolver and layout module) form the shared contract. Two repos
-that pin the same versioned copy of this file cannot drift on schema.
+layout module) form the shared contract. Two repos that pin the same
+versioned copy of this file cannot drift on schema. The serving repo
+implements its own resolver against this contract; nothing in this
+repo needs to read pointer files.
 
 Versioning rules
 ----------------
@@ -43,8 +45,13 @@ class ArtifactManifest:
     artifact_checksums is the authoritative checksum source. Consumers MUST
     verify sha256(model.pkl) against artifact_checksums["model.pkl"] before
     serving — never trust the byte stream alone.
+
+    ``app_id`` is mandatory and identifies which app this artifact belongs
+    to. The consumer-side loader cross-checks ``manifest.app_id`` against
+    its configured ``APP_ID`` env var — a mismatched manifest is refused.
     """
 
+    app_id: str
     run_id: str
     artifact_version: str
     registry_version: str
@@ -83,8 +90,14 @@ class PointerFile:
     Consumers poll this file (or get notified via S3 Event → SNS) and reload
     the model when version_id changes. The pointer points at an immutable
     manifest_uri, which in turn points at an immutable model.pkl.
+
+    ``app_id`` is mandatory. A pointer payload travelling between training
+    and serving carries its app scope explicitly so consumers can detect
+    misrouted files (e.g. a copy-paste typo putting app1's pointer in
+    app2's path).
     """
 
+    app_id: str
     version_id: str
     run_id: str
     registry_version: str

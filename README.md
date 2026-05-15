@@ -7,18 +7,25 @@ prediction APIs.
 ## Architecture
 
 This repo is **decoupled from the training stack** — it has zero MLflow
-dependency. It reads only the published S3 contract:
+dependency. It reads only the published S3 contract, scoped by `APP_ID`:
 
 ```
-s3://{app_bucket}/{stack_id}/output/registry/{model_name}/pointers/stable.json
-                                                                  └─ points to immutable
-s3://{app_bucket}/{stack_id}/output/artifacts/v{N}/champion/model.pkl
+s3://{bucket}/{stack_id}/output/registry/{APP_ID}/{model_name}/pointers/stable.json
+                                                                       └─ points to immutable
+s3://{bucket}/{stack_id}/output/artifacts/{APP_ID}/v{N}/champion/model.pkl
 ```
 
 The training repo writes `stable.json` after a successful promotion; this app
 re-reads `stable.json` periodically (or on demand via `/reload`) and swaps in
-the new model. Checksums in the artifact manifest are verified before any
-swap — corrupted artifacts are refused.
+the new model. Two guarantees:
+
+1. **Checksum verification.** SHA-256 of every downloaded `model.pkl` is
+   compared to the manifest before `pickle.load`. A corrupted artifact is
+   refused.
+2. **App-scope verification.** Both `pointer.app_id` and `manifest.app_id`
+   are cross-checked against this app's configured `APP_ID`. A payload
+   claiming a different scope is refused — serving the wrong model is
+   worse than serving nothing.
 
 ## Endpoints
 

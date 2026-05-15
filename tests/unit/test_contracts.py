@@ -1,11 +1,14 @@
 """Round-trip tests for the shared dataclasses.
 
 Verifies the JSON shape that crosses the training/serving boundary stays
-backwards-compatible: a payload written by the training repo must be
-loadable by this app.
+in sync: a payload written by the training repo must be loadable by this
+app. app_id is mandatory on Manifest, Pointer, and Trigger after the
+multi-tenant refactor.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from price_forecast.contracts import (
     SCHEMA_VERSION,
@@ -17,6 +20,7 @@ from price_forecast.contracts import (
 
 def test_manifest_round_trip():
     m = ArtifactManifest(
+        app_id="APP1",
         run_id="run-abc",
         artifact_version="v42",
         registry_version="5",
@@ -28,15 +32,18 @@ def test_manifest_round_trip():
     )
     payload = m.to_dict()
     assert payload["schema_version"] == SCHEMA_VERSION
-    assert payload["published_at"]  # filled automatically
+    assert payload["published_at"]
+    assert payload["app_id"] == "APP1"
 
     back = ArtifactManifest.from_dict(payload)
     assert back.run_id == "run-abc"
+    assert back.app_id == "APP1"
     assert back.artifact_checksums == {"model.pkl": "deadbeef"}
 
 
 def test_pointer_drops_none_optional_fields():
     p = PointerFile(
+        app_id="APP1",
         version_id="v42",
         run_id="run-abc",
         registry_version="5",
@@ -44,9 +51,10 @@ def test_pointer_drops_none_optional_fields():
         status="stable",
     )
     payload = p.to_dict()
-    assert "promoted_at" not in payload  # None should be stripped
+    assert "promoted_at" not in payload
     assert "promoted_by" not in payload
-    assert payload["updated_at"]  # auto-filled
+    assert payload["updated_at"]
+    assert payload["app_id"] == "APP1"
 
 
 def test_trigger_round_trip():
@@ -67,6 +75,7 @@ def test_trigger_round_trip():
 def test_from_dict_tolerates_unknown_fields():
     """Forward-compat: an older app loading a payload with new fields must not crash."""
     p = PointerFile.from_dict({
+        "app_id": "APP1",
         "version_id": "v42",
         "run_id": "abc",
         "registry_version": "5",
@@ -75,3 +84,17 @@ def test_from_dict_tolerates_unknown_fields():
         "future_field_we_dont_know_yet": "should_be_ignored",
     })
     assert p.version_id == "v42"
+    assert p.app_id == "APP1"
+
+
+def test_manifest_missing_app_id_raises():
+    """A payload that omits app_id must not silently coerce to empty string."""
+    with pytest.raises(TypeError):
+        ArtifactManifest.from_dict({
+            "run_id": "r",
+            "artifact_version": "v1",
+            "registry_version": "1",
+            "model_name": "m",
+            "model_type": "t",
+            "schema_hash": "h",
+        })

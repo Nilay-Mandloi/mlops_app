@@ -62,8 +62,8 @@ def publish_trigger(
         trigger_id=trigger_id,
         app_id=cfg.app_id,
         model_family=model_family,
-        dataset_uri=f"s3://{cfg.bucket}/{_full_key(cfg.prefix, trigger_dataset_key(trigger_id))}",
-        params_uri=f"s3://{cfg.bucket}/{_full_key(cfg.prefix, trigger_params_key(trigger_id))}",
+        dataset_uri=f"s3://{cfg.bucket}/{_full_key(cfg.prefix, trigger_dataset_key(cfg.app_id, trigger_id))}",
+        params_uri=f"s3://{cfg.bucket}/{_full_key(cfg.prefix, trigger_params_key(cfg.app_id, trigger_id))}",
         requested_by=requested_by,
         description=description,
     )
@@ -76,24 +76,24 @@ def publish_trigger(
     client.upload_file(
         Filename=str(dataset_path),
         Bucket=cfg.bucket,
-        Key=_full_key(cfg.prefix, trigger_dataset_key(trigger_id)),
+        Key=_full_key(cfg.prefix, trigger_dataset_key(cfg.app_id, trigger_id)),
     )
     client.upload_file(
         Filename=str(params_path),
         Bucket=cfg.bucket,
-        Key=_full_key(cfg.prefix, trigger_params_key(trigger_id)),
+        Key=_full_key(cfg.prefix, trigger_params_key(cfg.app_id, trigger_id)),
     )
     import json as _json
 
     client.put_object(
         Bucket=cfg.bucket,
-        Key=_full_key(cfg.prefix, trigger_metadata_key(trigger_id)),
+        Key=_full_key(cfg.prefix, trigger_metadata_key(cfg.app_id, trigger_id)),
         Body=_json.dumps(metadata.to_dict(), indent=2).encode("utf-8"),
         ContentType="application/json",
     )
 
-    trigger_uri = f"s3://{cfg.bucket}/{cfg.prefix.strip('/')}/triggers/{trigger_id}/"
-    logger.info("Published trigger {} -> {}", trigger_id, trigger_uri)
+    trigger_uri = f"s3://{cfg.bucket}/{cfg.prefix.strip('/')}/triggers/{cfg.app_id}/{trigger_id}/"
+    logger.info("Published trigger {} (app_id={}) -> {}", trigger_id, cfg.app_id, trigger_uri)
     return trigger_id, trigger_uri
 
 

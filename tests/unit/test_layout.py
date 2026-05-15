@@ -7,24 +7,35 @@ in contracts.py if the change is breaking.
 
 from __future__ import annotations
 
+import pytest
+
 from price_forecast import layout
 
 
+APP = "APP1"
+
+
 def test_artifact_model_pkl_key_shape():
-    assert layout.artifact_model_pkl_key("42") == "output/artifacts/v42/champion/model.pkl"
-    assert layout.artifact_model_pkl_key(7) == "output/artifacts/v7/champion/model.pkl"
-    assert layout.artifact_model_pkl_key("v9") == "output/artifacts/v9/champion/model.pkl"
+    assert layout.artifact_model_pkl_key(APP, "42") == "output/artifacts/APP1/v42/champion/model.pkl"
+    assert layout.artifact_model_pkl_key(APP, 7) == "output/artifacts/APP1/v7/champion/model.pkl"
+    assert layout.artifact_model_pkl_key(APP, "v9") == "output/artifacts/APP1/v9/champion/model.pkl"
 
 
 def test_pointer_key_shape():
     assert (
-        layout.pointer_key("price_forecast", "stable")
-        == "output/registry/price_forecast/pointers/stable.json"
+        layout.pointer_key(APP, "price_forecast", "stable")
+        == "output/registry/APP1/price_forecast/pointers/stable.json"
     )
 
 
 def test_trigger_dataset_key_shape():
     assert (
-        layout.trigger_dataset_key("2026-05-14T10-22Z_abc12345")
-        == "triggers/2026-05-14T10-22Z_abc12345/dataset.parquet"
+        layout.trigger_dataset_key(APP, "2026-05-14T10-22Z_abc12345")
+        == "triggers/APP1/2026-05-14T10-22Z_abc12345/dataset.parquet"
     )
+
+
+@pytest.mark.parametrize("bad", ["", " ", " app", "a/b", "..", ".x"])
+def test_unsafe_app_id_rejected(bad):
+    with pytest.raises(ValueError):
+        layout.artifact_model_pkl_key(bad, "v1")

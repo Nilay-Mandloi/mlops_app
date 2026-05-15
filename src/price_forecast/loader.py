@@ -175,27 +175,48 @@ class ModelStore:
             return None
 
     def reload(self) -> LoadedModel:
-        """Re-read the pointer, download the artifact if version changed, swap atomically."""
-        pointer_data = self._get_json(pointer_key(self._cfg.model_name, self._cfg.channel))
+        """Re-read the pointer, download the artifact if version changed, swap atomically.
+
+        Every key is app-scoped: pointer, manifest, and pkl are all read
+        from ``output/.../{app_id}/...``. Both pointer.app_id and
+        manifest.app_id are cross-checked against ``self._cfg.app_id``;
+        a payload claiming a different scope is refused — that's either
+        a misroute or a config error and serving the wrong model is worse
+        than serving nothing.
+        """
+        app_id = self._cfg.app_id
+        pointer_data = self._get_json(pointer_key(app_id, self._cfg.model_name, self._cfg.channel))
         if pointer_data is None:
             raise LookupError(
-                f"Pointer '{self._cfg.channel}' for model '{self._cfg.model_name}' not found. "
+                f"Pointer '{self._cfg.channel}' for app_id='{app_id}' "
+                f"model='{self._cfg.model_name}' not found. "
                 "Has the training pipeline run and promoted a version yet?"
             )
         pointer = PointerFile.from_dict(pointer_data)
+        if pointer.app_id != app_id:
+            raise RuntimeError(
+                f"Pointer scope mismatch: file claims app_id='{pointer.app_id}' but "
+                f"this app is configured for app_id='{app_id}'. Refusing to load — "
+                "this would serve another app's model."
+            )
 
         with self._lock:
             if self._current is not None and self._current.version_id == pointer.version_id:
                 logger.debug("Pointer unchanged at {} — skipping reload.", pointer.version_id)
                 return self._current
 
-        manifest_data = self._get_json(artifact_manifest_key(pointer.version_id))
+        manifest_data = self._get_json(artifact_manifest_key(app_id, pointer.version_id))
         if not manifest_data:
             raise RuntimeError(
-                f"Manifest for version {pointer.version_id} missing in S3. "
+                f"Manifest for app_id='{app_id}' version {pointer.version_id} missing. "
                 "Refusing to load model without a manifest to verify checksums against."
             )
         manifest = ArtifactManifest.from_dict(manifest_data)
+        if manifest.app_id != app_id:
+            raise RuntimeError(
+                f"Manifest scope mismatch: file claims app_id='{manifest.app_id}' but "
+                f"this app is configured for app_id='{app_id}'. Refusing to load."
+            )
 
         expected_checksum = manifest.artifact_checksums.get("model.pkl")
         if not expected_checksum:
@@ -206,7 +227,7 @@ class ModelStore:
 
         with TemporaryDirectory() as tmp:
             local_pkl = Path(tmp) / "model.pkl"
-            self._download_to(artifact_model_pkl_key(pointer.version_id), local_pkl)
+            self._download_to(artifact_model_pkl_key(app_id, pointer.version_id), local_pkl)
 
             actual = _sha256_file(local_pkl)
             if actual != expected_checksum:
