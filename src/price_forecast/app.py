@@ -19,7 +19,10 @@ Production characteristics:
 
 from __future__ import annotations
 
+import datetime
+import hmac
 import json as _json
+import re
 import sys
 import threading
 import time
@@ -29,11 +32,17 @@ from typing import Any
 
 import pandas as pd
 import typer
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, jsonify, make_response, render_template, request
 from loguru import logger
 from pydantic import ValidationError
 
 from price_forecast.config import AppConfig, load_config
+from price_forecast.layout import (
+    pointer_key,
+    trigger_failure_key,
+    trigger_metadata_key,
+    trigger_running_key,
+)
 from price_forecast.loader import ModelStore
 from price_forecast.metrics import Metrics
 from price_forecast.publisher import publish_trigger
@@ -47,7 +56,6 @@ from price_forecast.schemas import (
     TriggerTrainResponse,
 )
 from price_forecast.validation import SchemaValidationError, validate_features
-
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -93,13 +101,78 @@ def _require_admin(cfg: AppConfig):
         @wraps(view)
         def wrapped(*args, **kwargs):
             if not cfg.admin_token:
-                return jsonify(error="admin endpoints disabled (APP_ADMIN_TOKEN not set)"), 503
+                return jsonify(error="admin endpoints disabled (APP_ADMIN_TOKEN not set)"), 501
             token = request.headers.get("X-Admin-Token", "")
-            if token != cfg.admin_token:
+            # hmac.compare_digest prevents timing attacks that could leak token length/prefix.
+            if not hmac.compare_digest(token, cfg.admin_token):
                 return jsonify(error="invalid admin token"), 401
             return view(*args, **kwargs)
         return wrapped
     return decorator
+
+
+# ---------------------------------------------------------------------------
+# Admin login page (returned when token is absent or wrong)
+# ---------------------------------------------------------------------------
+
+_ADMIN_LOGIN_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Admin Login — Price Forecast</title>
+<style>
+:root{--bg:#0f1117;--s:#1a1d27;--b:#2d3148;--t:#e2e8f0;--m:#94a3b8;--a:#6366f1;--r:#ef4444;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--t);font-family:system-ui,sans-serif;
+     display:flex;align-items:center;justify-content:center;min-height:100vh;}
+.box{background:var(--s);border:1px solid var(--b);border-radius:8px;padding:32px;width:340px;}
+h2{color:var(--a);font-size:18px;margin-bottom:8px;}
+p.sub{color:var(--m);font-size:13px;margin-bottom:20px;}
+.err{color:var(--r);font-size:13px;margin-bottom:14px;display:none;}
+input{width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--b);
+      color:var(--t);border-radius:6px;font-size:14px;margin-bottom:12px;}
+button{width:100%;padding:10px;background:var(--a);color:#fff;border:none;
+       border-radius:6px;font-size:14px;cursor:pointer;}
+button:hover{opacity:.85;}
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>Price Forecast Admin</h2>
+  <p class="sub">Enter your admin token to continue.</p>
+  <p class="err" id="err">Invalid token — try again.</p>
+  <input type="password" id="tok" placeholder="Admin token" autofocus>
+  <button onclick="go()">Sign in</button>
+</div>
+<script>
+if (sessionStorage.getItem("admin_auth_failed")) {
+  document.getElementById("err").style.display = "block";
+  sessionStorage.removeItem("admin_auth_failed");
+}
+document.getElementById("tok").addEventListener("keydown", function(e) {
+  if (e.key === "Enter") go();
+});
+function go() {
+  var v = document.getElementById("tok").value;
+  if (!v) return;
+  fetch("/admin/api/status", {headers: {"X-Admin-Token": v}})
+    .then(function(r) {
+      if (r.ok) {
+        sessionStorage.setItem("admin_token", v);
+        window.location = "/admin";
+      } else {
+        sessionStorage.setItem("admin_auth_failed", "1");
+        document.getElementById("err").style.display = "block";
+      }
+    })
+    .catch(function() {
+      document.getElementById("err").style.display = "block";
+    });
+}
+</script>
+</body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -135,16 +208,21 @@ def _start_background_reloader(
     store: ModelStore,
     metrics: Metrics,
     interval_s: int,
+    stop_event: threading.Event | None = None,
 ) -> threading.Thread:
     """Periodic best-effort reload. Survives transient failures (logged at WARNING).
 
-    Exits the loop only on process termination (daemon thread). Each
-    iteration increments metrics so an outside observer can detect a
-    stuck reloader via reload_total / reload_errors_total.
+    Stops cleanly when stop_event is set (e.g. during test teardown or graceful
+    shutdown). Without a stop_event the thread runs for the lifetime of the process.
     """
     def _loop():
-        while True:
-            time.sleep(interval_s)
+        while stop_event is None or not stop_event.is_set():
+            if stop_event is not None:
+                stop_event.wait(timeout=interval_s)
+                if stop_event.is_set():
+                    break
+            else:
+                time.sleep(interval_s)
             try:
                 store.reload()
                 metrics.inc_reload(ok=True)
@@ -152,9 +230,15 @@ def _start_background_reloader(
             except LookupError as exc:
                 metrics.inc_reload(ok=False)
                 logger.info("Reload: pointer still absent: {}", exc)
-            except Exception as exc:
+            except RuntimeError as exc:
+                # Integrity failures: manifest missing, checksum mismatch, scope mismatch.
+                # Log at ERROR so alerting picks it up; keep serving the current (stale) model.
                 metrics.inc_reload(ok=False)
-                logger.warning("Background reload failed: {}", exc)
+                logger.error("Reload: integrity failure — continuing with stale model: {}", exc)
+            except Exception as exc:
+                # Transient S3 / network errors — will self-heal on the next cycle.
+                metrics.inc_reload(ok=False)
+                logger.warning("Reload: transient failure (will retry in {}s): {}", interval_s, exc)
 
     t = threading.Thread(target=_loop, daemon=True, name="model-reloader")
     t.start()
@@ -174,16 +258,20 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
     # Graceful startup: if the pointer is absent (first deploy, training
     # hasn't produced a stable.json yet), do NOT crash. Background reloader
     # will pick it up once it appears; /predict returns 503 in the meantime.
-    initial = store.try_reload()
+    try:
+        initial = store.try_reload()
+    except Exception as exc:
+        initial = None
+        logger.warning("Boot: initial model load failed; continuing in standby: {}", exc)
     if initial is not None:
         metrics.set_model_loaded(True)
         logger.info("Boot: loaded model {} at startup.", initial.version_id)
     else:
         logger.warning(
-            "Boot: no pointer at s3://{}/{}/output/registry/{}/pointers/{}.json — "
+            "Boot: no pointer at s3://{}/{}/output/registry/{}/{}/pointers/{}.json — "
             "starting in standby. Background reloader will retry every {}s "
             "for up to {}s before logs escalate.",
-            cfg.bucket, cfg.stack_id, cfg.model_name, cfg.channel,
+            cfg.bucket, cfg.stack_id, cfg.app_id, cfg.model_name, cfg.channel,
             cfg.reload_interval_s, cfg.startup_grace_seconds,
         )
 
@@ -290,6 +378,9 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             return jsonify(exc.to_dict()), 400
 
         df = pd.DataFrame([payload.features])
+        feature_cols = loaded.manifest.schema_contract.get("feature_columns")
+        if feature_cols:
+            df = df[feature_cols]
         try:
             pred = float(loaded.model.predict(df)[0])
         except Exception as exc:
@@ -321,17 +412,19 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             metrics.inc_batch(ok=False)
             return jsonify(error="model not loaded yet (standby)"), 503
 
-        # Schema validation: check the first row's keys against the contract
-        # (assume homogeneity — all rows share columns). Cheap; catches the
-        # common case of a typo in the caller's request schema.
-        if payload.rows:
+        # Schema validation must cover every row. Checking only the first row
+        # allows malformed later rows to slip through and fail inside predict().
+        for row in payload.rows:
             try:
-                validate_features(payload.rows[0], loaded.manifest.schema_contract, strict=cfg.strict_schema)
+                validate_features(row, loaded.manifest.schema_contract, strict=cfg.strict_schema)
             except SchemaValidationError as exc:
-                metrics.inc_batch(ok=False)
+                metrics.inc_batch(ok=False, schema_error=True)
                 return jsonify(exc.to_dict()), 400
 
         df = pd.DataFrame(payload.rows)
+        feature_cols = loaded.manifest.schema_contract.get("feature_columns")
+        if feature_cols:
+            df = df[feature_cols]
         try:
             preds = [float(p) for p in loaded.model.predict(df)]
         except Exception as exc:
@@ -374,12 +467,181 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
                 model_family=payload.model_family,
                 description=payload.description,
                 requested_by=request.headers.get("X-User", ""),
+                dataset_format=payload.dataset_format,
+                cfg=cfg,
             )
-        except (FileNotFoundError, OSError) as exc:
+        except (FileNotFoundError, ValueError) as exc:
+            return jsonify(error=str(exc)), 400
+        except RuntimeError as exc:
+            # Covers GitHub dispatch failures (HTTP 4xx/5xx) and S3 upload errors.
+            logger.error("trigger-train failed: {}", exc)
+            return jsonify(error=str(exc)), 502
+        except OSError as exc:
             return jsonify(error=str(exc)), 400
         return jsonify(
             TriggerTrainResponse(trigger_id=trigger_id, trigger_uri=uri).model_dump()
         )
+
+    _TRIGGER_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
+
+    @flask_app.get("/trigger-status/<trigger_id>")
+    @_require_admin(cfg)
+    def trigger_status(trigger_id: str):
+        """Poll whether a triggered training run has produced a new promoted version.
+
+        Query parameters:
+          baseline (optional): version_id that was current *before* the trigger was
+            created (from GET /model/info). When provided, "completed" means the
+            pointer's version_id has changed away from this baseline — exact and
+            reliable regardless of unrelated promotions that happened between.
+            Without this param, completion falls back to timestamp comparison
+            (less precise: a different trigger's promotion can satisfy it).
+
+        Returns:
+          status: "completed" | "running" | "failed" | "pending"
+            - "pending"   — trigger.json exists but running.json not yet written (dispatch enqueued)
+            - "running"   — training job has started (running.json present, not yet done)
+            - "failed"    — training job failed (failed.json written by the CI job on failure)
+            - "completed" — model promoted; pointer has moved past baseline or updated_at timestamp
+          current_version_id: the version_id in the current pointer
+          current_version_updated_at: ISO timestamp from the pointer
+        """
+        if not _TRIGGER_ID_RE.match(trigger_id):
+            return jsonify(error="invalid trigger_id format"), 400
+
+        trigger_data = store._get_json(trigger_metadata_key(cfg.app_id, trigger_id))
+        if trigger_data is None:
+            return jsonify(error=f"trigger {trigger_id!r} not found"), 404
+
+        # State machine (checked in priority order):
+        #   failed.json present  → "failed"  (terminal; stop polling)
+        #   running.json present → "running" (transient; keep polling)
+        #   neither              → "pending" (dispatch enqueued, worker not yet started)
+        # "completed" is checked last after pointer comparison.
+        failure_data = store._get_json(trigger_failure_key(cfg.app_id, trigger_id))
+        if failure_data is not None:
+            return jsonify(
+                trigger_id=trigger_id,
+                status="failed",
+                reason=failure_data.get("reason", "training job failed"),
+                current_version_id=None,
+                current_version_updated_at=None,
+            )
+
+        running_data = store._get_json(trigger_running_key(cfg.app_id, trigger_id))
+
+        baseline_version_id = request.args.get("baseline", "").strip() or None
+
+        pointer_data = store._get_json(pointer_key(cfg.app_id, cfg.model_name, cfg.channel))
+        if pointer_data is None:
+            return jsonify(
+                trigger_id=trigger_id,
+                status="running" if running_data is not None else "pending",
+                reason="model not yet promoted",
+                current_version_id=None,
+                current_version_updated_at=None,
+            )
+
+        current_version_id = pointer_data.get("version_id", "")
+        updated_at_str = pointer_data.get("updated_at", "")
+
+        if baseline_version_id is not None:
+            completed = bool(current_version_id and current_version_id != baseline_version_id)
+        else:
+            # Fallback: compare pointer timestamp against trigger creation time.
+            ts_str = trigger_id[:16]
+            try:
+                trigger_created_at = datetime.datetime.strptime(
+                    ts_str, "%Y%m%dT%H%M%SZ"
+                ).replace(tzinfo=datetime.timezone.utc)
+            except ValueError:
+                return jsonify(error="cannot parse trigger_id timestamp"), 400
+            completed = False
+            if updated_at_str:
+                try:
+                    updated_at = datetime.datetime.fromisoformat(updated_at_str)
+                    completed = updated_at > trigger_created_at
+                except ValueError:
+                    pass
+
+        if completed:
+            status = "completed"
+        elif running_data is not None:
+            status = "running"
+        else:
+            status = "pending"
+
+        return jsonify(
+            trigger_id=trigger_id,
+            status=status,
+            current_version_id=current_version_id,
+            current_version_updated_at=updated_at_str,
+        )
+
+    @flask_app.get("/admin")
+    def admin_dashboard():
+        if not cfg.admin_token:
+            return jsonify(error="admin endpoints disabled (APP_ADMIN_TOKEN not set)"), 501
+        token = request.headers.get("X-Admin-Token", "")
+        if not token or not hmac.compare_digest(token, cfg.admin_token):
+            return Response(_ADMIN_LOGIN_HTML, mimetype="text/html")
+        resp = make_response(render_template("admin.html", token=token, app_id=cfg.app_id))
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+        )
+        return resp
+
+    @flask_app.get("/admin/api/status")
+    @_require_admin(cfg)
+    def admin_status():
+        loaded = store.current_or_none()
+        m = metrics
+        avg_lat = (
+            m.predict_latency_sum_ms / m.predict_latency_count
+            if m.predict_latency_count > 0 else 0.0
+        )
+        model_section: dict[str, Any] = {"status": "standby"}
+        if loaded is not None:
+            loaded_iso = datetime.datetime.fromtimestamp(
+                loaded.loaded_at, tz=datetime.timezone.utc
+            ).isoformat()
+            model_section = {
+                "status": "ready",
+                "version_id": loaded.version_id,
+                "run_id": loaded.manifest.run_id,
+                "registry_version": loaded.manifest.registry_version,
+                "model_name": loaded.manifest.model_name,
+                "model_type": loaded.manifest.model_type,
+                "promoted_at": loaded.pointer.promoted_at,
+                "loaded_at": loaded_iso,
+                "channel": cfg.channel,
+                "schema_contract": loaded.manifest.schema_contract,
+            }
+        return jsonify({
+            "model": model_section,
+            "app": {
+                "app_id": cfg.app_id,
+                "env": cfg.env,
+                "model_name": cfg.model_name,
+                "bucket": cfg.bucket,
+                "stack_id": cfg.stack_id,
+                "channel": cfg.channel,
+            },
+            "metrics": {
+                "predict_total": m.predict_total,
+                "predict_errors": m.predict_errors,
+                "predict_schema_errors": m.predict_schema_errors,
+                "predict_latency_count": m.predict_latency_count,
+                "batch_predict_total": m.batch_predict_total,
+                "batch_predict_errors": m.batch_predict_errors,
+                "reload_total": m.reload_total,
+                "reload_errors": m.reload_errors,
+                "model_loaded": m.model_loaded,
+                "last_reload_unixtime": m.last_reload_unixtime,
+                "predict_avg_latency_ms": round(avg_lat, 2),
+            },
+            "server_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
 
     return flask_app
 

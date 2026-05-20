@@ -7,9 +7,10 @@ the training repo.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PredictRequest(BaseModel):
@@ -24,7 +25,7 @@ class BatchPredictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rows: list[dict[str, Any]] = Field(
-        ..., min_length=1, max_length=10_000, description="Up to 10k feature rows."
+        ..., min_length=1, description="One or more feature rows; upper bound enforced by APP_MAX_BATCH_SIZE."
     )
 
 
@@ -53,10 +54,34 @@ class ModelInfoResponse(BaseModel):
 class TriggerTrainRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    dataset_path: str = Field(..., description="Server-local path to a parquet file.")
+    dataset_path: str = Field(..., description="Server-local path to a dataset file (CSV or Parquet).")
     params_path: str = Field(..., description="Server-local path to a params YAML file.")
     model_family: str = Field(..., description="regression | classification | forecasting | ...")
     description: str = ""
+    dataset_format: str | None = Field(
+        None,
+        description="Override format auto-detection: 'csv' or 'parquet'. Default: inferred from file extension.",
+    )
+
+    @field_validator("dataset_path", "params_path")
+    @classmethod
+    def _no_path_traversal(cls, v: str) -> str:
+        root = os.environ.get("TRIGGER_DATA_ROOT", "").strip().rstrip(os.sep)
+        env = os.environ.get("ENV", "dev").strip().lower()
+        if not root:
+            if env == "prod":
+                raise ValueError(
+                    "TRIGGER_DATA_ROOT must be set before accepting trigger-train requests."
+                )
+            return v
+        abs_path = os.path.realpath(os.path.abspath(v))
+        abs_root = os.path.realpath(os.path.abspath(root))
+        if not (abs_path == abs_root or abs_path.startswith(abs_root + os.sep)):
+            raise ValueError(
+                f"path {v!r} is outside TRIGGER_DATA_ROOT ({root!r}). "
+                "Path traversal not permitted."
+            )
+        return v
 
 
 class TriggerTrainResponse(BaseModel):

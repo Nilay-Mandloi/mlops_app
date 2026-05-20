@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Price Forecast Admin — {{ app_id }}</title>
+<style>
+:root {
+  --bg:#0f1117; --surface:#1a1d27; --border:#2d3148;
+  --text:#e2e8f0; --muted:#94a3b8;
+  --accent:#6366f1; --green:#22c55e; --red:#ef4444; --yellow:#f59e0b;
+  --r:8px;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  background:var(--bg); color:var(--text);
+  font-family:system-ui,-apple-system,sans-serif; font-size:14px; line-height:1.5;
+  padding:24px; min-height:100vh;
+}
+header {
+  display:flex; align-items:center; justify-content:space-between;
+  margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid var(--border);
+}
+header h1 { font-size:20px; font-weight:600; color:var(--accent); }
+.badge {
+  font-size:11px; font-weight:700; padding:3px 10px; border-radius:100px;
+  border:1px solid var(--border); background:var(--surface);
+}
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+.grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-bottom:16px; }
+.span2 { grid-column:1/-1; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px; }
+.card-title {
+  font-size:11px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.08em; color:var(--muted); margin-bottom:14px;
+}
+.kv { display:grid; grid-template-columns:max-content 1fr; gap:6px 16px; align-items:start; }
+.kl { color:var(--muted); white-space:nowrap; }
+.kv span:nth-child(even) { font-family:monospace; font-size:13px; word-break:break-all; }
+.status-badge { display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:13px; margin-bottom:14px; }
+.dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+.dot-green { background:var(--green); box-shadow:0 0 6px var(--green); }
+.dot-yellow { background:var(--yellow); box-shadow:0 0 6px var(--yellow); }
+.dot-red { background:var(--red); box-shadow:0 0 6px var(--red); }
+.dot-gray { background:var(--muted); }
+.mbox { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+.metric { text-align:center; padding:14px 8px; background:var(--bg); border:1px solid var(--border); border-radius:var(--r); }
+.mv { font-size:22px; font-weight:700; }
+.ml { font-size:11px; color:var(--muted); margin-top:3px; }
+.ms { font-size:11px; color:var(--muted); margin-top:2px; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; }
+button { padding:8px 16px; border-radius:6px; border:none; cursor:pointer; font-size:13px; font-weight:500; }
+button:hover { opacity:.85; }
+button:disabled { opacity:.4; cursor:not-allowed; }
+.btn-p { background:var(--accent); color:#fff; }
+.btn-s { background:var(--bg); color:var(--text); border:1px solid var(--border); }
+.btn-g { background:#166534; color:#dcfce7; }
+pre {
+  background:var(--bg); border:1px solid var(--border); border-radius:6px;
+  padding:12px; overflow:auto; font-size:12px; max-height:260px;
+  margin-top:14px; display:none;
+}
+pre.open { display:block; }
+/* Form inputs */
+.form-row { display:flex; flex-direction:column; gap:4px; margin-bottom:12px; }
+.form-row label { font-size:11px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+.form-row input, .form-row select, .form-row textarea {
+  background:var(--bg); border:1px solid var(--border); color:var(--text);
+  border-radius:6px; padding:7px 10px; font-size:13px; font-family:inherit; width:100%;
+}
+.form-row input:focus, .form-row select:focus { outline:none; border-color:var(--accent); }
+/* Health pills */
+.health-row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+.pill {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:4px 10px; border-radius:100px; font-size:12px; font-weight:600;
+  border:1px solid var(--border); background:var(--bg);
+}
+/* Trigger status strip */
+.status-strip {
+  padding:10px 14px; border-radius:6px; border:1px solid var(--border);
+  background:var(--bg); font-size:13px; margin-top:12px; display:none;
+}
+.status-strip.open { display:block; }
+/* Footer */
+.footer { margin-top:16px; display:flex; justify-content:space-between; color:var(--muted); font-size:12px; }
+/* Toast */
+.toast {
+  position:fixed; bottom:24px; right:24px;
+  padding:11px 18px; border-radius:var(--r);
+  font-size:13px; font-weight:500; z-index:200; display:none;
+}
+.tok  { background:var(--green); color:#fff; }
+.terr { background:var(--red);   color:#fff; }
+@media (max-width:900px) {
+  .grid3 { grid-template-columns:1fr 1fr; }
+}
+@media (max-width:640px) {
+  .grid, .grid3 { grid-template-columns:1fr; }
+  .span2 { grid-column:1; }
+  .mbox { grid-template-columns:repeat(2,1fr); }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Price Forecast Admin</h1>
+  <span class="badge" id="env-badge">–</span>
+</header>
+
+<!-- Row 1: Model Status | App Config | Health -->
+<div class="grid3">
+
+  <!-- Model Status -->
+  <div class="card">
+    <div class="card-title">Model Status</div>
+    <div class="status-badge" id="status-badge"><span class="dot dot-yellow"></span> Loading…</div>
+    <div class="kv">
+      <span class="kl">Version</span>    <span id="kv-version">–</span>
+      <span class="kl">Run ID</span>     <span id="kv-run">–</span>
+      <span class="kl">Registry</span>   <span id="kv-reg">–</span>
+      <span class="kl">Model type</span> <span id="kv-type">–</span>
+      <span class="kl">Channel</span>    <span id="kv-channel">–</span>
+      <span class="kl">Loaded at</span>  <span id="kv-loaded">–</span>
+      <span class="kl">Promoted at</span><span id="kv-promoted">–</span>
+    </div>
+  </div>
+
+  <!-- App Config -->
+  <div class="card">
+    <div class="card-title">App Configuration</div>
+    <div class="kv">
+      <span class="kl">App ID</span>     <span id="cfg-app">–</span>
+      <span class="kl">Env</span>        <span id="cfg-env">–</span>
+      <span class="kl">Model name</span> <span id="cfg-model">–</span>
+      <span class="kl">Stack</span>      <span id="cfg-stack">–</span>
+      <span class="kl">Bucket</span>     <span id="cfg-bucket">–</span>
+      <span class="kl">Channel</span>    <span id="cfg-chan">–</span>
+    </div>
+  </div>
+
+  <!-- Health -->
+  <div class="card">
+    <div class="card-title">System Health</div>
+    <div class="health-row" id="health-pills">
+      <span class="pill" id="hp-app"><span class="dot dot-gray"></span> App</span>
+      <span class="pill" id="hp-model"><span class="dot dot-gray"></span> Model</span>
+      <span class="pill" id="hp-s3"><span class="dot dot-gray"></span> S3 Pointer</span>
+    </div>
+    <div class="kv">
+      <span class="kl">App</span>    <span id="h-app">checking…</span>
+      <span class="kl">Model</span>  <span id="h-model">checking…</span>
+      <span class="kl">S3</span>     <span id="h-s3">checking…</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- Row 2: Metrics (full width) -->
+<div class="grid">
+  <div class="card span2">
+    <div class="card-title">Metrics (since last restart)</div>
+    <div class="mbox">
+      <div class="metric">
+        <div class="mv" id="m-pred">–</div>
+        <div class="ml">Predictions</div>
+        <div class="ms" id="m-pred-s"></div>
+      </div>
+      <div class="metric">
+        <div class="mv" id="m-lat">–</div>
+        <div class="ml">Avg Latency ms</div>
+        <div class="ms" id="m-lat-s"></div>
+      </div>
+      <div class="metric">
+        <div class="mv" id="m-batch">–</div>
+        <div class="ml">Batch Requests</div>
+        <div class="ms" id="m-batch-s"></div>
+      </div>
+      <div class="metric">
+        <div class="mv" id="m-rel">–</div>
+        <div class="ml">Reloads</div>
+        <div class="ms" id="m-rel-s"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Row 3: Request Training | Trigger Status -->
+<div class="grid">
+
+  <!-- Request Training -->
+  <div class="card">
+    <div class="card-title">Request Training</div>
+    <div class="form-row">
+      <label>Dataset path (server-local, inside TRIGGER_DATA_ROOT)</label>
+      <input type="text" id="tr-dataset" placeholder="/data/triggers/dataset.parquet">
+    </div>
+    <div class="form-row">
+      <label>Params path (server-local)</label>
+      <input type="text" id="tr-params" placeholder="/data/triggers/params.yaml">
+    </div>
+    <div class="form-row">
+      <label>Model family</label>
+      <select id="tr-family">
+        <option value="regression">regression</option>
+        <option value="classification">classification</option>
+        <option value="forecasting">forecasting</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Description (optional)</label>
+      <input type="text" id="tr-desc" placeholder="e.g. weekly retrain 2026-05">
+    </div>
+    <div class="actions" style="margin-top:4px">
+      <button class="btn-g" id="btn-trigger" onclick="doTrigger()">Request Training</button>
+      <button class="btn-s" onclick="doRefresh()">Refresh Now</button>
+    </div>
+  </div>
+
+  <!-- Trigger Status -->
+  <div class="card">
+    <div class="card-title">Trigger Status</div>
+    <div class="form-row">
+      <label>Trigger ID</label>
+      <input type="text" id="ts-id" placeholder="20260519T120000Z_a1b2c3d4" oninput="onTriggerIdInput()">
+    </div>
+    <div class="actions">
+      <button class="btn-s" id="btn-poll" onclick="pollTrigger()" disabled>Poll Status</button>
+      <button class="btn-s" id="btn-autopoll" onclick="toggleAutoPoll()">Auto-poll</button>
+    </div>
+    <div class="status-strip" id="ts-strip">
+      <div class="kv" id="ts-kv">
+        <span class="kl">Status</span>   <span id="ts-status">–</span>
+        <span class="kl">Version</span>  <span id="ts-version">–</span>
+        <span class="kl">Updated</span>  <span id="ts-updated">–</span>
+        <span class="kl">Reason</span>   <span id="ts-reason" style="display:none"></span>
+      </div>
+    </div>
+
+    <!-- Quick actions that appear once a trigger has been tracked -->
+    <div style="margin-top:12px; display:none" id="ts-actions">
+      <div class="actions">
+        <button class="btn-p" id="btn-reload-after" onclick="doReload()">Reload Model</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Row 4: Actions -->
+<div class="grid">
+  <div class="card span2">
+    <div class="card-title">Actions</div>
+    <div class="actions">
+      <button class="btn-p" id="btn-reload" onclick="doReload()">Reload Model</button>
+      <button class="btn-s" id="btn-schema" onclick="toggleSchema()">View Schema Contract</button>
+    </div>
+    <pre id="schema-pre"></pre>
+  </div>
+</div>
+
+<div class="footer">
+  <span id="ft-refreshed">–</span>
+  <span id="ft-server">–</span>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = {{ token | tojson }};
+let _schema = null, _schemaOpen = false;
+let _autoPollInterval = null;
+let _baselineVersion = null;   // captured when trigger is fired, for exact completion check
+
+function $(id) { return document.getElementById(id); }
+function set(id, v) { const el = $(id); if (el) el.textContent = (v !== null && v !== undefined) ? v : "–"; }
+function fmtNum(n) { return (n ?? 0).toLocaleString(); }
+function fmtTime(iso) {
+  if (!iso) return "–";
+  try { return new Date(iso).toUTCString().replace("GMT", "UTC"); } catch { return iso; }
+}
+function authHdr() { return { "X-Admin-Token": TOKEN }; }
+
+function toast(msg, ok) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.className = "toast " + (ok ? "tok" : "terr");
+  el.style.display = "block";
+  setTimeout(() => { el.style.display = "none"; }, 4500);
+}
+
+// ── Status ──────────────────────────────────────────────────────────────────
+
+function doRefresh() {
+  fetch("/admin/api/status", { headers: authHdr() })
+    .then(r => r.ok ? r.json() : Promise.reject("HTTP " + r.status))
+    .then(render)
+    .catch(err => toast("Status fetch failed: " + err, false));
+
+  checkHealth();
+}
+
+function render(d) {
+  const m = d.model, a = d.app, met = d.metrics;
+
+  const sb = $("status-badge");
+  if (m.status === "ready") {
+    sb.innerHTML = '<span class="dot dot-green"></span> READY';
+    _baselineVersion = _baselineVersion || m.version_id;
+  } else {
+    sb.innerHTML = '<span class="dot dot-yellow"></span> STANDBY — no model loaded';
+  }
+
+  set("kv-version",  m.version_id);
+  set("kv-run",      m.run_id ? m.run_id.slice(0, 12) + "…" : "–");
+  set("kv-reg",      m.registry_version ? "v" + m.registry_version : "–");
+  set("kv-type",     m.model_type);
+  set("kv-channel",  m.channel);
+  set("kv-loaded",   fmtTime(m.loaded_at));
+  set("kv-promoted", fmtTime(m.promoted_at));
+
+  _schema = m.schema_contract;
+
+  set("cfg-app",    a.app_id);
+  set("cfg-env",    a.env);
+  set("cfg-model",  a.model_name);
+  set("cfg-stack",  a.stack_id);
+  set("cfg-bucket", a.bucket);
+  set("cfg-chan",   a.channel);
+
+  const envEl = $("env-badge");
+  envEl.textContent = (a.env || "dev").toUpperCase();
+  envEl.style.color = a.env === "prod" ? "#ef4444" : "#22c55e";
+
+  set("m-pred", fmtNum(met.predict_total));
+  const errPct = met.predict_total > 0
+    ? ((met.predict_errors / met.predict_total) * 100).toFixed(1) + "% errors"
+    : "no errors";
+  set("m-pred-s", errPct);
+
+  const avgLat = typeof met.predict_avg_latency_ms === "number"
+    ? met.predict_avg_latency_ms.toFixed(1) : "–";
+  set("m-lat",   avgLat);
+  set("m-lat-s", met.predict_latency_count + " samples");
+
+  set("m-batch",   fmtNum(met.batch_predict_total));
+  set("m-batch-s", met.batch_predict_errors + " errors");
+
+  set("m-rel",   fmtNum(met.reload_total));
+  set("m-rel-s", met.reload_errors + " failed");
+
+  set("ft-refreshed", "Last refreshed: " + new Date().toUTCString().replace("GMT", "UTC"));
+  set("ft-server",    "Server time: " + fmtTime(d.server_time));
+
+  if (_schemaOpen && _schema) {
+    $("schema-pre").textContent = JSON.stringify(_schema, null, 2);
+  }
+
+  // Update health model pill immediately from status data
+  const hpModel = $("hp-model");
+  if (m.status === "ready") {
+    hpModel.innerHTML = '<span class="dot dot-green"></span> Model';
+    set("h-model", "loaded — " + (m.version_id || "unknown"));
+  } else {
+    hpModel.innerHTML = '<span class="dot dot-yellow"></span> Model';
+    set("h-model", "standby (no model)");
+  }
+}
+
+// ── Health ───────────────────────────────────────────────────────────────────
+
+function checkHealth() {
+  // App health
+  fetch("/health")
+    .then(r => {
+      const ok = r.ok;
+      $("hp-app").innerHTML = ok
+        ? '<span class="dot dot-green"></span> App'
+        : '<span class="dot dot-red"></span> App';
+      set("h-app", ok ? "healthy" : "HTTP " + r.status);
+    })
+    .catch(() => {
+      $("hp-app").innerHTML = '<span class="dot dot-red"></span> App';
+      set("h-app", "unreachable");
+    });
+
+  // S3 pointer — inferred from /ready endpoint (which checks if model loaded)
+  fetch("/ready")
+    .then(r => r.json().then(j => ({ ok: r.ok, j })))
+    .then(({ ok, j }) => {
+      if (ok) {
+        $("hp-s3").innerHTML = '<span class="dot dot-green"></span> S3 Pointer';
+        set("h-s3", "pointer found — " + (j.version || ""));
+      } else {
+        $("hp-s3").innerHTML = '<span class="dot dot-yellow"></span> S3 Pointer';
+        set("h-s3", j.reason || "no pointer yet");
+      }
+    })
+    .catch(() => {
+      $("hp-s3").innerHTML = '<span class="dot dot-red"></span> S3 Pointer';
+      set("h-s3", "check failed");
+    });
+}
+
+// ── Reload ───────────────────────────────────────────────────────────────────
+
+function doReload() {
+  const btns = [$("btn-reload"), $("btn-reload-after")];
+  btns.forEach(b => { if (b) { b.disabled = true; b.textContent = "Reloading…"; } });
+  fetch("/reload", { method: "POST", headers: authHdr() })
+    .then(r => r.json().then(j => ({ ok: r.ok, j })))
+    .then(({ ok, j }) => {
+      if (ok) { toast("Reloaded → " + j.reloaded_to, true); doRefresh(); }
+      else     { toast("Reload failed: " + (j.error || "unknown"), false); }
+    })
+    .catch(err => toast("Reload request failed: " + err, false))
+    .finally(() => btns.forEach(b => {
+      if (b) { b.disabled = false; b.textContent = b.id === "btn-reload-after" ? "Reload Model" : "Reload Model"; }
+    }));
+}
+
+// ── Trigger training ─────────────────────────────────────────────────────────
+
+function doTrigger() {
+  const dataset = $("tr-dataset").value.trim();
+  const params  = $("tr-params").value.trim();
+  const family  = $("tr-family").value;
+  const desc    = $("tr-desc").value.trim();
+
+  if (!dataset || !params) {
+    toast("Dataset path and params path are required.", false);
+    return;
+  }
+
+  const btn = $("btn-trigger");
+  btn.disabled = true;
+  btn.textContent = "Submitting…";
+
+  // Capture current version before firing so we can detect completion exactly
+  const currentLoaded = $("kv-version").textContent;
+  if (currentLoaded && currentLoaded !== "–") _baselineVersion = currentLoaded;
+
+  fetch("/trigger-train", {
+    method: "POST",
+    headers: { ...authHdr(), "Content-Type": "application/json" },
+    body: JSON.stringify({ dataset_path: dataset, params_path: params,
+                           model_family: family, description: desc }),
+  })
+    .then(r => r.json().then(j => ({ ok: r.ok, j })))
+    .then(({ ok, j }) => {
+      if (ok) {
+        toast("Training triggered — ID: " + j.trigger_id, true);
+        // Populate trigger status panel and start polling
+        $("ts-id").value = j.trigger_id;
+        $("ts-strip").classList.add("open");
+        onTriggerIdInput();
+        startAutoPoll();
+      } else {
+        toast("Trigger failed: " + (j.error || JSON.stringify(j)), false);
+      }
+    })
+    .catch(err => toast("Trigger request failed: " + err, false))
+    .finally(() => { btn.disabled = false; btn.textContent = "Request Training"; });
+}
+
+// ── Trigger status ────────────────────────────────────────────────────────────
+
+function onTriggerIdInput() {
+  const id = $("ts-id").value.trim();
+  $("btn-poll").disabled = !id;
+  if (!id) {
+    $("ts-strip").classList.remove("open");
+    stopAutoPoll();
+  }
+}
+
+function pollTrigger() {
+  const id = $("ts-id").value.trim();
+  if (!id) return;
+
+  let url = "/trigger-status/" + encodeURIComponent(id);
+  if (_baselineVersion) url += "?baseline=" + encodeURIComponent(_baselineVersion);
+
+  fetch(url, { headers: authHdr() })
+    .then(r => r.json().then(j => ({ ok: r.ok, j })))
+    .then(({ ok, j }) => {
+      if (!ok) {
+        toast("Status check failed: " + (j.error || ""), false);
+        return;
+      }
+
+      $("ts-strip").classList.add("open");
+
+      const statusColors = {
+        completed: "dot-green", running: "dot-yellow",
+        pending: "dot-gray", failed: "dot-red",
+      };
+      const dotCls = statusColors[j.status] || "dot-gray";
+      set("ts-status", j.status.toUpperCase());
+      $("ts-status").style.color = j.status === "completed" ? "var(--green)"
+        : j.status === "failed" ? "var(--red)"
+        : j.status === "running" ? "var(--yellow)"
+        : "var(--muted)";
+
+      set("ts-version", j.current_version_id || "–");
+      set("ts-updated", fmtTime(j.current_version_updated_at));
+
+      const reasonEl = $("ts-reason");
+      if (j.reason) {
+        reasonEl.textContent = j.reason;
+        reasonEl.style.display = "";
+      } else {
+        reasonEl.style.display = "none";
+      }
+
+      // Show Reload button when completed
+      $("ts-actions").style.display = j.status === "completed" ? "block" : "none";
+
+      // Stop polling on terminal states
+      if (j.status === "completed" || j.status === "failed") {
+        stopAutoPoll();
+        if (j.status === "completed") {
+          toast("Training completed — new version: " + (j.current_version_id || "?"), true);
+        } else {
+          toast("Training failed: " + (j.reason || "see Actions logs"), false);
+        }
+      }
+    })
+    .catch(err => toast("Status poll failed: " + err, false));
+}
+
+function startAutoPoll() {
+  if (_autoPollInterval) return;
+  $("btn-autopoll").textContent = "Stop Auto-poll";
+  $("btn-autopoll").style.background = "var(--red)";
+  $("btn-autopoll").style.color = "#fff";
+  _autoPollInterval = setInterval(pollTrigger, 15000);
+  pollTrigger();  // immediate first check
+}
+
+function stopAutoPoll() {
+  if (!_autoPollInterval) return;
+  clearInterval(_autoPollInterval);
+  _autoPollInterval = null;
+  $("btn-autopoll").textContent = "Auto-poll";
+  $("btn-autopoll").style.background = "";
+  $("btn-autopoll").style.color = "";
+}
+
+function toggleAutoPoll() {
+  if (_autoPollInterval) stopAutoPoll();
+  else startAutoPoll();
+}
+
+// ── Schema ────────────────────────────────────────────────────────────────────
+
+function toggleSchema() {
+  _schemaOpen = !_schemaOpen;
+  const pre = $("schema-pre"), btn = $("btn-schema");
+  if (_schemaOpen && _schema) {
+    pre.textContent = JSON.stringify(_schema, null, 2);
+    pre.classList.add("open");
+    btn.textContent = "Hide Schema Contract";
+  } else {
+    pre.classList.remove("open");
+    btn.textContent = "View Schema Contract";
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+doRefresh();
+setInterval(doRefresh, 30000);
+</script>
+
+</body>
+</html>

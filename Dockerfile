@@ -18,21 +18,16 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Install dependencies before copying source so the resolver layer is cached
-# across source-only changes.
+# across source-only changes. A stub __init__.py lets pip resolve deps from
+# pyproject.toml (honoring all version bounds) without needing the full source.
 COPY pyproject.toml ./
-RUN pip install --upgrade pip wheel \
-    && pip install \
-        flask>=3.0 \
-        boto3>=1.34 \
-        joblib>=1.3 \
-        scikit-learn>=1.4 \
-        pandas>=2.0 \
-        pydantic>=2.5 \
-        typer>=0.9 \
-        loguru>=0.7 \
-        gunicorn>=22.0
+RUN mkdir -p src/price_forecast \
+    && touch src/price_forecast/__init__.py \
+    && pip install --upgrade pip wheel \
+    && pip install "." "gunicorn>=22.0,<24" \
+    && rm -rf src/
 
-# Now copy source + install the package (without re-resolving deps).
+# Now copy source + install the package in editable mode (no dep re-resolution).
 COPY src ./src
 RUN pip install --no-deps -e .
 
