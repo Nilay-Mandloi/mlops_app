@@ -65,6 +65,7 @@ class ArtifactManifest:
     schema_version: str = SCHEMA_VERSION
     git_commit: str | None = None
     code_version: str | None = None
+    metrics: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -138,13 +139,19 @@ class TriggerFile:
     Written by the Flask app (or any orchestrator) to S3. Training picks it
     up, reads dataset_uri + params_uri, runs the pipeline, and publishes
     artifacts back to the same app's bucket.
+
+    dataset_format declares which reader the training side should use
+    (pd.read_csv vs pd.read_parquet etc.). The extension on dataset_uri
+    must agree with this value — the publisher enforces that, and the
+    puller asserts it on the way in.
     """
 
     trigger_id: str
     app_id: str
     model_family: str  # "regression" | "classification" | "forecasting" | ...
-    dataset_uri: str  # s3://.../triggers/{id}/dataset.parquet
-    params_uri: str  # s3://.../triggers/{id}/params.yaml
+    dataset_uri: str  # s3://.../triggers/{app_id}/{id}/dataset.{csv|parquet}
+    params_uri: str  # s3://.../triggers/{app_id}/{id}/params.yaml
+    dataset_format: str = "parquet"  # "csv" | "parquet"
     requested_by: str = ""
     created_at: str = ""
     description: str = ""

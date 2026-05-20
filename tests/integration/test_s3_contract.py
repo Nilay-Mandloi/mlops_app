@@ -45,7 +45,6 @@ from price_forecast.layout import (
 )
 from price_forecast.loader import ModelStore
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -53,8 +52,8 @@ from price_forecast.loader import ModelStore
 BUCKET = "shared-mlops-bucket"
 PREFIX = "MLOPS"
 MODEL_NAME = "price_forecast"
-APP_ID = "APP1"
-APP_ID_OTHER = "APP2"
+APP_ID = "app1"
+APP_ID_OTHER = "app2"
 
 
 @pytest.fixture
@@ -84,6 +83,9 @@ def _make_cfg(app_id: str = APP_ID) -> AppConfig:
         log_format="",
         strict_schema=True,
         startup_grace_seconds=60,
+        training_repo="",
+        training_repo_token="",
+        training_auto_promote=False,
     )
 
 
@@ -157,7 +159,66 @@ def test_trigger_marker_carries_app_id(s3, app_cfg, tmp_path):
     body = s3.get_object(Bucket=BUCKET, Key=_full(trigger_metadata_key(APP_ID, trigger_id)))["Body"].read()
     marker = TriggerFile.from_dict(json.loads(body))
     assert marker.app_id == APP_ID
-    assert marker.dataset_uri.endswith(trigger_dataset_key(APP_ID, trigger_id))
+    assert marker.dataset_format == "parquet"
+    assert marker.dataset_uri.endswith(trigger_dataset_key(APP_ID, trigger_id, "parquet"))
+
+
+def test_csv_trigger_uses_csv_key_and_marker_format(s3, app_cfg, tmp_path):
+    """A cleaned .csv input lands at .../dataset.csv and the marker says so."""
+    from price_forecast import publisher
+
+    dataset = tmp_path / "cleaned.csv"
+    params = tmp_path / "params.yaml"
+    dataset.write_text("id,y\n1,2.5\n3,4.5\n", encoding="utf-8")
+    params.write_text("dataset:\n  target_column: y\n", encoding="utf-8")
+
+    publisher.load_config = lambda: app_cfg
+    trigger_id, uri = publisher.publish_trigger(dataset, params, model_family="regression")
+
+    # The .csv key (not .parquet) exists.
+    s3.head_object(Bucket=BUCKET, Key=_full(trigger_dataset_key(APP_ID, trigger_id, "csv")))
+
+    # The marker declares csv, and dataset_uri points at the .csv key.
+    body = s3.get_object(Bucket=BUCKET, Key=_full(trigger_metadata_key(APP_ID, trigger_id)))["Body"].read()
+    marker = TriggerFile.from_dict(json.loads(body))
+    assert marker.dataset_format == "csv"
+    assert marker.dataset_uri.endswith(".csv")
+
+    # Round-trip content: what we PUT is what's stored. Use splitlines so we
+    # don't care about LF vs CRLF (Windows tempfile writes can introduce CR).
+    fetched = s3.get_object(
+        Bucket=BUCKET, Key=_full(trigger_dataset_key(APP_ID, trigger_id, "csv"))
+    )["Body"].read().decode("utf-8")
+    assert fetched.splitlines()[0] == "id,y"
+
+
+def test_explicit_dataset_format_override_wins_over_extension(s3, app_cfg, tmp_path):
+    from price_forecast import publisher
+
+    # Misnamed file — extension says .data, override says csv.
+    dataset = tmp_path / "rows.data"
+    params = tmp_path / "params.yaml"
+    dataset.write_text("a,b\n1,2\n", encoding="utf-8")
+    params.write_text("k: v\n", encoding="utf-8")
+
+    publisher.load_config = lambda: app_cfg
+    trigger_id, _ = publisher.publish_trigger(
+        dataset, params, model_family="r", dataset_format="csv"
+    )
+    s3.head_object(Bucket=BUCKET, Key=_full(trigger_dataset_key(APP_ID, trigger_id, "csv")))
+
+
+def test_unknown_dataset_extension_without_override_raises(s3, app_cfg, tmp_path):
+    from price_forecast import publisher
+
+    dataset = tmp_path / "rows.xyz"
+    params = tmp_path / "params.yaml"
+    dataset.write_text("noop\n", encoding="utf-8")
+    params.write_text("k: v\n", encoding="utf-8")
+
+    publisher.load_config = lambda: app_cfg
+    with pytest.raises(ValueError, match="Cannot infer dataset_format"):
+        publisher.publish_trigger(dataset, params, model_family="r")
 
 
 def test_two_apps_publish_to_independent_trigger_dirs(s3, monkeypatch, tmp_path):
@@ -289,6 +350,27 @@ def test_loader_refuses_cross_app_manifest(s3, app_cfg):
         store.reload()
 
 
+def test_loader_refuses_cross_model_manifest(s3, app_cfg):
+    """Pointer is correct, but the manifest belongs to a different model_name."""
+    _publish_artifact_set(s3, version="v1")
+    bad_manifest = ArtifactManifest(
+        app_id=APP_ID,
+        run_id="r",
+        artifact_version="v1",
+        registry_version="5",
+        model_name="different_model",
+        model_type="toy",
+        schema_hash="h",
+        schema_contract={"feature_columns": ["a"]},
+        artifact_checksums={"model.pkl": "x"},
+    )
+    _put_json(s3, artifact_manifest_key(APP_ID, "v1"), bad_manifest.to_dict())
+
+    store = ModelStore(app_cfg)
+    with pytest.raises(RuntimeError, match="Manifest model mismatch"):
+        store.reload()
+
+
 def test_loader_refuses_corrupted_pkl(s3, app_cfg):
     _publish_artifact_set(s3, version="v2")
     _put(s3, artifact_model_pkl_key(APP_ID, "v2"), b"corrupted-bytes")
@@ -360,3 +442,165 @@ def test_loader_in_app2_ignores_app1_artifacts(s3, monkeypatch):
     store2 = ModelStore(_make_cfg(APP_ID_OTHER))
     with pytest.raises(LookupError):
         store2.reload()
+
+
+# ---------------------------------------------------------------------------
+# publish_trigger — upload failure + rollback
+# ---------------------------------------------------------------------------
+
+class _FailingUploader:
+    """Wraps a boto3 S3 client; makes upload_file raise on the Nth call."""
+
+    def __init__(self, real_client, *, fail_on_call: int):
+        self._real = real_client
+        self._call_count = 0
+        self._fail_on_call = fail_on_call
+
+    def upload_file(self, **kwargs):
+        self._call_count += 1
+        if self._call_count == self._fail_on_call:
+            raise RuntimeError(f"simulated S3 failure on upload call {self._call_count}")
+        return self._real.upload_file(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _trigger_keys_in_s3(s3, trigger_id: str) -> list[str]:
+    resp = s3.list_objects_v2(
+        Bucket=BUCKET, Prefix=f"{PREFIX}/triggers/{APP_ID}/{trigger_id}/"
+    )
+    return [obj["Key"] for obj in resp.get("Contents", [])]
+
+
+def test_publish_trigger_rolls_back_dataset_when_params_upload_fails(s3, app_cfg, tmp_path):
+    """If the params upload fails, the already-uploaded dataset key must be deleted."""
+    from price_forecast import publisher
+
+    dataset = tmp_path / "dataset.parquet"
+    params = tmp_path / "params.yaml"
+    dataset.write_bytes(b"PAR1fake-parquet")
+    params.write_text("k: v\n", encoding="utf-8")
+
+    # Dataset is the 1st upload_file call; params is the 2nd.
+    failing_client = _FailingUploader(s3, fail_on_call=2)
+
+    with pytest.raises(RuntimeError, match="simulated S3 failure"):
+        publisher.publish_trigger(
+            dataset, params, model_family="regression", cfg=app_cfg, s3_client=failing_client
+        )
+
+    # S3 must be empty — the dataset key uploaded on call 1 must have been rolled back.
+    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{PREFIX}/triggers/{APP_ID}/")
+    orphaned = [obj["Key"] for obj in resp.get("Contents", [])]
+    assert not orphaned, f"Expected empty S3 after rollback, found: {orphaned}"
+
+
+def test_publish_trigger_rolls_back_all_keys_when_metadata_put_fails(s3, app_cfg, tmp_path):
+    """If the metadata put_object fails, all three already-uploaded keys are rolled back."""
+    from price_forecast import publisher
+
+    dataset = tmp_path / "dataset.parquet"
+    params = tmp_path / "params.yaml"
+    dataset.write_bytes(b"PAR1fake-parquet")
+    params.write_text("k: v\n", encoding="utf-8")
+
+    real_put = s3.put_object
+    put_count = [0]
+
+    def failing_put(**kwargs):
+        put_count[0] += 1
+        if "trigger" in kwargs.get("Key", "") and put_count[0] == 1:
+            raise RuntimeError("simulated S3 failure on trigger.json put")
+        return real_put(**kwargs)
+
+    s3.put_object = failing_put
+
+    with pytest.raises(RuntimeError, match="simulated S3 failure"):
+        publisher.publish_trigger(
+            dataset, params, model_family="regression", cfg=app_cfg, s3_client=s3
+        )
+
+    # Both dataset and params keys uploaded before the put_object failure must be gone.
+    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{PREFIX}/triggers/{APP_ID}/")
+    orphaned = [obj["Key"] for obj in resp.get("Contents", [])]
+    assert not orphaned, f"Expected empty S3 after rollback, found: {orphaned}"
+
+
+def test_publish_trigger_dispatch_skipped_when_no_training_repo(s3, app_cfg, tmp_path):
+    """publish_trigger completes successfully when training_repo is unset (dispatch skipped)."""
+    from dataclasses import replace
+
+    from price_forecast import publisher
+
+    cfg_no_dispatch = replace(app_cfg, training_repo="", training_repo_token="")
+    dataset = tmp_path / "d.parquet"
+    params = tmp_path / "p.yaml"
+    dataset.write_bytes(b"data")
+    params.write_text("k: v\n", encoding="utf-8")
+
+    trigger_id, uri = publisher.publish_trigger(
+        dataset, params, model_family="regression", cfg=cfg_no_dispatch, s3_client=s3
+    )
+
+    # All three keys must exist — upload succeeded.
+    keys = _trigger_keys_in_s3(s3, trigger_id)
+    assert len(keys) == 3, f"Expected 3 trigger keys, found: {keys}"
+
+
+def test_dispatch_failure_writes_failed_marker_to_s3(s3, app_cfg, tmp_path):
+    """If GitHub dispatch fails after S3 uploads, a failed.json marker is written
+    so /trigger-status/<id> can return 'failed' instead of hanging in 'pending'.
+    """
+    from dataclasses import replace
+
+    from price_forecast import publisher
+    from price_forecast.layout import trigger_failure_key
+
+    # Point at a non-existent repo to make dispatch fail with a RuntimeError.
+    cfg = replace(
+        app_cfg,
+        training_repo="org/nonexistent-repo",
+        training_repo_token="fake-token",
+    )
+    dataset = tmp_path / "d.parquet"
+    params = tmp_path / "p.yaml"
+    dataset.write_bytes(b"data")
+    params.write_text("k: v\n", encoding="utf-8")
+
+    # Patch _dispatch_training so it raises without hitting the real GitHub API.
+    original_dispatch = publisher._dispatch_training
+
+    def _failing_dispatch(trigger_id, cfg):
+        raise RuntimeError("simulated dispatch failure")
+
+    publisher._dispatch_training = _failing_dispatch
+    try:
+        with pytest.raises(RuntimeError, match="simulated dispatch failure"):
+            publisher.publish_trigger(
+                dataset, params, model_family="regression", cfg=cfg, s3_client=s3
+            )
+    finally:
+        publisher._dispatch_training = original_dispatch
+
+    # S3 uploads committed before dispatch — all three payload keys are present.
+    # ADDITIONALLY: a failed.json marker must exist so /trigger-status returns "failed".
+    # Find the trigger_id by listing everything under triggers/{app_id}/
+    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{PREFIX}/triggers/{APP_ID}/")
+    all_keys = [obj["Key"] for obj in resp.get("Contents", [])]
+
+    trigger_ids = set()
+    for key in all_keys:
+        parts = key.split(f"triggers/{APP_ID}/")
+        if len(parts) == 2:
+            trigger_ids.add(parts[1].split("/")[0])
+
+    assert len(trigger_ids) == 1, f"Expected exactly one trigger folder, got: {trigger_ids}"
+    tid = trigger_ids.pop()
+
+    failure_full_key = f"{PREFIX}/{trigger_failure_key(APP_ID, tid)}"
+    body = s3.get_object(Bucket=BUCKET, Key=failure_full_key)["Body"].read()
+    payload = json.loads(body)
+    assert payload["status"] == "failed"
+    assert "trigger_id" in payload
+    assert "dispatch" in payload["reason"].lower() or "failed" in payload["reason"].lower()

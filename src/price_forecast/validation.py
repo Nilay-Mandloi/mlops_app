@@ -19,6 +19,7 @@ the shape of the incoming dict.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -85,9 +86,17 @@ def validate_features(
     unexpected = sorted(got_set - expected_set) if strict else []
 
     nullable = _nullable_columns(schema_contract)
+
+    def _is_null(v: Any) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, float):
+            return math.isnan(v)
+        return False
+
     null_required = sorted(
         col for col in expected_set & got_set
-        if features[col] is None and col not in nullable
+        if _is_null(features[col]) and col not in nullable
     )
 
     if missing or unexpected or null_required:

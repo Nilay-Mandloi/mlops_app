@@ -16,15 +16,20 @@ import pickle
 import random
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 from loguru import logger
+
+from price_forecast.config import AppConfig
+from price_forecast.contracts import ArtifactManifest, PointerFile
+from price_forecast.layout import artifact_model_pkl_key, pointer_key
 
 T = TypeVar("T")
 
@@ -62,16 +67,10 @@ def _retry_s3(label: str, func: Callable[[], T], *, attempts: int = 4, base_dela
                        label, attempt + 1, attempts, last_exc, delay)
         time.sleep(delay)
 
-    assert last_exc is not None
+    if last_exc is None:
+        raise RuntimeError(f"{label}: retry loop exhausted with no recorded exception (bug in _retry_s3)")
     raise last_exc
 
-from price_forecast.config import AppConfig
-from price_forecast.contracts import ArtifactManifest, PointerFile
-from price_forecast.layout import (
-    artifact_manifest_key,
-    artifact_model_pkl_key,
-    pointer_key,
-)
 
 
 def _sha256_file(path: Path) -> str:
@@ -145,6 +144,23 @@ class ModelStore:
             ),
         )
 
+    def _logical_key_from_uri(self, uri: str) -> str:
+        prefix = f"s3://{self._cfg.bucket}/"
+        if not uri.startswith(prefix):
+            raise RuntimeError(
+                f"Pointer manifest_uri '{uri}' does not belong to bucket '{self._cfg.bucket}'."
+            )
+        key = uri[len(prefix):]
+        stack_prefix = self._cfg.prefix.strip("/")
+        if stack_prefix:
+            expected = f"{stack_prefix}/"
+            if not key.startswith(expected):
+                raise RuntimeError(
+                    f"Pointer manifest_uri '{uri}' does not belong to stack prefix '{stack_prefix}'."
+                )
+            key = key[len(expected):]
+        return key
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -199,13 +215,13 @@ class ModelStore:
                 f"this app is configured for app_id='{app_id}'. Refusing to load — "
                 "this would serve another app's model."
             )
-
         with self._lock:
             if self._current is not None and self._current.version_id == pointer.version_id:
                 logger.debug("Pointer unchanged at {} — skipping reload.", pointer.version_id)
                 return self._current
 
-        manifest_data = self._get_json(artifact_manifest_key(app_id, pointer.version_id))
+        manifest_key = self._logical_key_from_uri(pointer.manifest_uri)
+        manifest_data = self._get_json(manifest_key)
         if not manifest_data:
             raise RuntimeError(
                 f"Manifest for app_id='{app_id}' version {pointer.version_id} missing. "
@@ -216,6 +232,11 @@ class ModelStore:
             raise RuntimeError(
                 f"Manifest scope mismatch: file claims app_id='{manifest.app_id}' but "
                 f"this app is configured for app_id='{app_id}'. Refusing to load."
+            )
+        if manifest.model_name != self._cfg.model_name:
+            raise RuntimeError(
+                f"Manifest model mismatch: file claims model_name='{manifest.model_name}' but "
+                f"this app is configured for model_name='{self._cfg.model_name}'. Refusing to load."
             )
 
         expected_checksum = manifest.artifact_checksums.get("model.pkl")

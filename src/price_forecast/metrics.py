@@ -23,6 +23,7 @@ class Metrics:
     predict_schema_errors: int = 0
     batch_predict_total: int = 0
     batch_predict_errors: int = 0
+    batch_predict_schema_errors: int = 0
     reload_total: int = 0
     reload_errors: int = 0
     # Gauges
@@ -48,11 +49,13 @@ class Metrics:
             if schema_error:
                 self.predict_schema_errors += 1
 
-    def inc_batch(self, *, ok: bool) -> None:
+    def inc_batch(self, *, ok: bool, schema_error: bool = False) -> None:
         with self._lock:
             self.batch_predict_total += 1
             if not ok:
                 self.batch_predict_errors += 1
+            if schema_error:
+                self.batch_predict_schema_errors += 1
 
     def inc_reload(self, *, ok: bool) -> None:
         with self._lock:
@@ -61,9 +64,10 @@ class Metrics:
                 self.reload_errors += 1
 
     def set_model_loaded(self, loaded: bool) -> None:
-        self.model_loaded = 1 if loaded else 0
-        if loaded:
-            self.last_reload_unixtime = time.time()
+        with self._lock:
+            self.model_loaded = 1 if loaded else 0
+            if loaded:
+                self.last_reload_unixtime = time.time()
 
     # ------------------------------------------------------------------
     # Rendering
@@ -87,6 +91,9 @@ class Metrics:
             "# HELP price_forecast_batch_predict_errors_total Total failing /predict/batch calls.",
             "# TYPE price_forecast_batch_predict_errors_total counter",
             f"price_forecast_batch_predict_errors_total{{{labels}}} {self.batch_predict_errors}",
+            "# HELP price_forecast_batch_predict_schema_errors_total Total /predict/batch requests rejected on schema.",
+            "# TYPE price_forecast_batch_predict_schema_errors_total counter",
+            f"price_forecast_batch_predict_schema_errors_total{{{labels}}} {self.batch_predict_schema_errors}",
             "# HELP price_forecast_reload_total Total model reload attempts.",
             "# TYPE price_forecast_reload_total counter",
             f"price_forecast_reload_total{{{labels}}} {self.reload_total}",

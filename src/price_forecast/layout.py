@@ -34,33 +34,33 @@ Logical key shapes
     output/registry/{app_id}/{model_name}/pointers/history/{ts}_{pointer}_v{N}.json
     output/locks/{app_id}/{lock_name}.lock
     feature-store/{app_id}/input/{dataset_name}/manifests/{version}.json
-    triggers/{app_id}/{trigger_id}/{dataset.parquet|params.yaml|trigger.json}
+    triggers/{app_id}/{trigger_id}/{dataset.parquet|params.yaml|trigger.json|running.json|failed.json}
 """
 
 from __future__ import annotations
 
+import re
+import uuid
+
 STACK_PREFIX_MLOPS = "MLOPS"
+
+APP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
 def _vtag(version: str | int) -> str:
-    """Coerce '42' / 42 / 'v42' to 'v42'."""
     s = str(version)
     return s if s.startswith("v") else f"v{s}"
 
 
 def _check_app_id(app_id: str) -> str:
-    """Validate app_id is non-empty and safe to put in an S3 key.
+    """Validate app_id matches ^[a-z0-9][a-z0-9_-]{0,62}$.
 
-    Empty app_id would silently produce "//" in the path and risk
-    cross-tenant collisions. Forward-slash characters would let a
-    caller escape their scope. Reject both up front.
+    Rejects empty, uppercase, path-separator, whitespace, and dot-prefix values
+    that would cause silent cross-tenant S3 collisions or key escapes.
     """
-    if not app_id or not isinstance(app_id, str):
-        raise ValueError(f"app_id is required and must be a non-empty string; got {app_id!r}")
-    if "/" in app_id or app_id.startswith(".") or app_id.strip() != app_id:
+    if not isinstance(app_id, str) or not APP_ID_RE.match(app_id):
         raise ValueError(
-            f"app_id must not contain '/' or surrounding whitespace and must not start "
-            f"with '.'; got {app_id!r}"
+            f"app_id must match ^[a-z0-9][a-z0-9_-]{{0,62}}$; got {app_id!r}"
         )
     return app_id
 
@@ -129,10 +129,15 @@ def pointer_history_key(
     version: str | int,
     timestamp: str,
 ) -> str:
-    """Immutable audit trail for pointer flips: rollback by copying back."""
+    """Immutable audit trail for pointer flips: rollback by copying back.
+
+    UUID suffix prevents collision when two promotions fire within the same second
+    (e.g. concurrent canary + stable writes during blue-green cutover).
+    """
+    uid = uuid.uuid4().hex[:8]
     return (
         f"output/registry/{_check_app_id(app_id)}/{model_name}/pointers/history/"
-        f"{timestamp}_{pointer_name}_{_vtag(version)}.json"
+        f"{timestamp}_{pointer_name}_{_vtag(version)}_{uid}.json"
     )
 
 
@@ -158,13 +163,30 @@ def feature_store_input_manifest_key(app_id: str, dataset_name: str, version: st
 # Triggers (input contract from app → training) — app-scoped
 # ---------------------------------------------------------------------------
 
+SUPPORTED_DATASET_FORMATS: frozenset[str] = frozenset({"csv", "parquet"})
+
+
+def _check_dataset_format(fmt: str) -> str:
+    if fmt not in SUPPORTED_DATASET_FORMATS:
+        raise ValueError(
+            f"dataset_format must be one of {sorted(SUPPORTED_DATASET_FORMATS)}; got {fmt!r}"
+        )
+    return fmt
+
+
 def trigger_root(app_id: str, trigger_id: str) -> str:
     """Folder prefix for a single trigger."""
     return f"triggers/{_check_app_id(app_id)}/{trigger_id}"
 
 
-def trigger_dataset_key(app_id: str, trigger_id: str) -> str:
-    return f"{trigger_root(app_id, trigger_id)}/dataset.parquet"
+def trigger_dataset_key(app_id: str, trigger_id: str, dataset_format: str = "parquet") -> str:
+    """Dataset key with the extension matching the actual format on disk.
+
+    The extension is informational (we don't sniff S3 keys to infer format —
+    that's the marker's job) but using the right one means a manual
+    aws-cli download produces a sensible filename.
+    """
+    return f"{trigger_root(app_id, trigger_id)}/dataset.{_check_dataset_format(dataset_format)}"
 
 
 def trigger_params_key(app_id: str, trigger_id: str) -> str:
@@ -173,3 +195,21 @@ def trigger_params_key(app_id: str, trigger_id: str) -> str:
 
 def trigger_metadata_key(app_id: str, trigger_id: str) -> str:
     return f"{trigger_root(app_id, trigger_id)}/trigger.json"
+
+
+def trigger_running_key(app_id: str, trigger_id: str) -> str:
+    """Written at the very first step of the training job before any work begins.
+
+    Presence signals the run has been picked up by a worker (state = running).
+    Combined with trigger.json absent = queued (dispatch fired, worker not yet started).
+    """
+    return f"{trigger_root(app_id, trigger_id)}/running.json"
+
+
+def trigger_failure_key(app_id: str, trigger_id: str) -> str:
+    """Written by the training job on failure so /trigger-status can surface the state.
+
+    Presence of this object means the triggered run failed; its absence combined with
+    trigger.json presence means the run is still queued or running.
+    """
+    return f"{trigger_root(app_id, trigger_id)}/failed.json"
