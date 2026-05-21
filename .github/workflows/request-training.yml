@@ -110,7 +110,7 @@ jobs:
           TRAINING_AUTO_PROMOTE: ${{ inputs.auto_promote }}
           TRIGGER_DATA_ROOT:     ${{ github.workspace }}
         run: |
-          price-forecast-trigger push \
+          price-forecast-trigger \
             --dataset  "${DATASET_LOCAL}" \
             --params   "${PARAMS_LOCAL}" \
             --model-family "${{ inputs.model_family }}" \
