@@ -14,7 +14,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import boto3
 import typer
@@ -295,7 +295,7 @@ def push_cmd(
     model_family: str = typer.Option(..., "--model-family"),
     description: str = typer.Option("", "--description"),
     requested_by: str = typer.Option("", "--requested-by"),
-    dataset_format: str | None = typer.Option(
+    dataset_format: Optional[str] = typer.Option(  # noqa: B008, UP045
         None,
         "--dataset-format",
         help="Override auto-detection: 'csv' or 'parquet'. Default: inferred from file extension.",

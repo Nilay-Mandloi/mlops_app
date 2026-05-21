@@ -31,7 +31,7 @@ import time
 import uuid
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import boto3
 import pandas as pd
@@ -746,8 +746,8 @@ cli_app = typer.Typer()
 
 @cli_app.command()
 def serve(
-    host: str | None = typer.Option(None, "--host"),
-    port: int | None = typer.Option(None, "--port"),
+    host: Optional[str] = typer.Option(None, "--host"),  # noqa: B008, UP045
+    port: Optional[int] = typer.Option(None, "--port"),  # noqa: B008, UP045
 ) -> None:
     """Start the Flask development server (use gunicorn in production)."""
     cfg = load_config()
