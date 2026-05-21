@@ -38,7 +38,7 @@ the new model. Two guarantees:
 | POST   | `/predict`        | Single prediction (validates features against manifest.schema_contract)|
 | POST   | `/predict/batch`  | Batch predictions (capped at `APP_MAX_BATCH_SIZE`)                     |
 | POST   | `/reload`         | Re-read pointer and reload (admin token)                               |
-| POST   | `/trigger-train`  | Push dataset + params to S3 to kick off training (admin token)         |
+| POST   | `/trigger-train`  | Kick off a training run from user-supplied dataset + params on S3 (admin token) |
 
 Every response carries `X-Request-Id` (echoes the inbound header if present, else uuid) and `X-Model-Version`. Every request emits one structured log line with method, path, status, latency, request_id, model_version, app_id.
 
@@ -78,6 +78,38 @@ LOG_FORMAT=json                      # JSON sink for log aggregators (default: h
 - **Checksum verification.** Every artifact download cross-checks `sha256(model.pkl)` against the manifest. A corrupted byte stream is refused before `pickle.load`.
 - **Retry/backoff.** Pointer + manifest + pkl reads retry on 5xx / throttling with exponential backoff (4 attempts, base 0.5s + jitter). A transient S3 blip during reload doesn't propagate to callers.
 - **Schema validation.** `/predict` cross-checks request features against the manifest's `schema_contract.feature_columns` before invoking the model. Missing / extra / null-required columns return 400 with explicit field lists.
+
+## Triggering a training run (multi-user)
+
+This app is multi-tenant: every user supplies BOTH their dataset AND
+their own `params.yaml` (uploaded to S3 in advance).  The app forwards
+those two files unchanged to the training repo, so users with different
+features, targets, or metrics can train side-by-side without sharing
+schema state.
+
+```
+USER:    upload dataset.parquet → s3://my-bucket/me/dataset.parquet
+USER:    upload params.yaml     → s3://my-bucket/me/params.yaml
+USER:    POST /trigger-train  (or run request-training.yml workflow)
+         {
+           "dataset_s3_uri": "s3://my-bucket/me/dataset.parquet",
+           "params_s3_uri":  "s3://my-bucket/me/params.yaml",
+           "model_family":   "regression"
+         }
+         (with X-Admin-Token: <APP_ADMIN_TOKEN>)
+
+APP:     downloads both from S3 → uploads under
+         s3://APP_S3_BUCKET/{STACK_ID}/triggers/{APP_ID}/{trigger_id}/
+         → fires repository_dispatch(train-model) to TRAINING_REPO
+
+TRAINING:pulls trigger from S3 → patches params.input_uri only →
+         runs DVC pipeline with user's params → promotes → updates stable.json
+
+APP:     background reloader re-reads stable.json → loads new model
+```
+
+Use `params.yaml` in this repo only as a **reference template** — the
+running app does not consume it; each request supplies its own.
 
 ## Local development
 

@@ -1,33 +1,55 @@
 ################################################################################
-# params.yaml — serving-side training contract
+# params.yaml — USER TEMPLATE (not the serving app's contract)
 #
-# This file is uploaded to S3 as part of every training trigger and consumed by
-# the training repo as its runtime configuration. Edit here when you need to
-# change dataset schema, feature columns, evaluation metrics, or promotion
-# behaviour for THIS application.
+# This file is a REFERENCE TEMPLATE only.  Each user who requests training
+# must supply their own params.yaml to s3://bucket/path/params.yaml and pass
+# that URI when triggering a training run.
 #
-# Usage:
-#   Automatically via POST /trigger-train (dataset_path + this file).
-#   Manually via GitHub Actions: .github/workflows/request-training.yml.
-#   Directly via CLI: price-forecast-trigger push --dataset ... --params params.yaml
+# How to use:
+#   1. Copy this file.
+#   2. Fill in the sections that match YOUR dataset.
+#   3. Upload to S3:
+#        aws s3 cp my_params.yaml s3://my-bucket/my-project/params.yaml
+#   4. Trigger training via GitHub Actions or the /trigger-train API:
+#        dataset_s3_uri: s3://my-bucket/my-project/dataset.parquet
+#        params_s3_uri:  s3://my-bucket/my-project/params.yaml
+#
+# The serving app does NOT maintain a single shared params.yaml.  Every
+# training run is driven by the user-supplied file so different users can
+# train on different schemas, targets, and metrics without interfering.
+#
+# Required fields (must be filled):
+#   dataset.name, dataset.target_column, dataset.feature_columns
+#   evaluation_config.primary_metric, evaluation_config.metric_directions
+#   feature_store.feature_set_name
 ################################################################################
 
 dataset:
-  name: price_forecast
+  # Unique name for this dataset / project.  Used to scope the feature store
+  # and the artifact version counter — keep it consistent across runs.
+  name: "YOUR_DATASET_NAME"
 
-  # Source URI is overridden at trigger time (the trigger upload replaces this).
-  # Leave blank here; the publisher sets it from the uploaded dataset path.
+  # input_uri is patched automatically by the training workflow from
+  # trigger.json.  Leave it blank here.
   input_uri: ""
 
-  target_column: target
+  # Column in the raw dataset to predict.
+  target_column: "target"
 
-  # Rename map applied before any other processing. Add entries if your
-  # raw dataset uses different column names than the feature columns below.
+  # Rename columns BEFORE any processing.  Useful when the raw CSV uses
+  # display names that differ from the feature_columns below.
+  # Example:  column_rename_map: {"Total Sales (Y)": "total_sales"}
   column_rename_map: {}
 
+  # Column holding the timestamp (leave blank if not time-series data).
   date_column: ""
-  task_type: regression          # regression | classification
 
+  # regression | classification
+  task_type: regression
+
+  # auto        — uses chronological split when date_column is set, random otherwise.
+  # chronological — sort by date_column, take the last test_size fraction as test.
+  # random      — random stratified / non-stratified split.
   split_strategy: auto
   test_size: 0.1
   valid_size: 0.1
@@ -35,12 +57,12 @@ dataset:
 
   schema_version: "1.0"
 
-  # Columns that must be present in the raw dataset.
+  # Every row in the raw dataset must have these columns.
   required_columns:
     - target
 
-  # Model input features. Keep this list in sync with the serving app's
-  # /predict endpoint — requests must include exactly these keys.
+  # IMPORTANT: these are the EXACT columns the trained model will receive at
+  # prediction time.  They must match the features your /predict requests send.
   feature_columns:
     - feature_1
     - feature_2
@@ -62,12 +84,15 @@ dataset:
   datetime_columns: []
 
   preprocessing:
+    # median | mean | most_frequent | constant
     imputation_strategy: median
     scaling: false
+    # Extract year / month / day / weekday features from date_column.
     use_date_features: false
+    # drop | encode  (what to do with the raw date_column after feature extraction)
     datetime_handling: drop
 
-  input_format: ""
+  input_format: ""   # leave blank — inferred from file extension (csv / parquet)
   output_format: ""
   csv_sep: ","
   csv_encoding: "utf-8"
@@ -82,29 +107,54 @@ paths:
 
 
 feature_store:
-  feature_set_name: price_forecast_features_v1
+  # Name used to cache feature-engineered data in S3.
+  # Use a versioned suffix when you change feature_columns, e.g. "my_project_v2".
+  feature_set_name: "YOUR_DATASET_NAME_features_v1"
   store_root: data/feature_store
 
 
 evaluation_config:
+  # Primary metric drives the champion vs. challenger comparison.
+  # Supported: rmse, mae, r2, mape, accuracy, f1, log_loss, auc
   primary_metric: rmse
+
   secondary_metrics:
     - mae
     - r2
+
+  # Direction each metric must move to count as an improvement.
+  # lower — smaller is better (rmse, mae, log_loss, mape)
+  # higher — larger is better (r2, accuracy, f1, auc)
   metric_directions:
     rmse: lower
     mae: lower
     r2: higher
+
+  # Optional hard gates.  The challenger must satisfy ALL thresholds to be
+  # eligible for promotion regardless of improvement over the champion.
+  # Example:  thresholds: {rmse: 50, r2: 0.8}
   thresholds: {}
 
 
 promotion:
-  mode: auto                     # auto | manual | disabled
-  min_improvement: 0.01          # challenger must beat champion by at least 1%
-  snapshot_enabled: true         # publish model.pkl + manifest to S3
-  auto_promote: true             # set false to require manual approval
+  # auto     — promote automatically if challenger beats champion.
+  # manual   — rank_compare records the result but does not promote; a human
+  #            must run promote.py or trigger the promote workflow.
+  # disabled — never promote (useful for experimentation branches).
+  mode: auto
+
+  # Challenger must beat the champion by at least this fraction (1 % default).
+  min_improvement: 0.01
+
+  # Publish model.pkl + manifest to S3 on promotion.
+  snapshot_enabled: true
+
+  # Mirror of mode=auto.  Kept for backward compatibility with older workflow
+  # steps that read promotion.auto_promote directly.
+  auto_promote: true
 
 
 training:
+  # Worker threads for parallel candidate training.
   max_workers: 2
   auto_promote: true

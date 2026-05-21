@@ -47,6 +47,28 @@ def test_validate_null_in_nullable_is_fine():
     validate_features({"a": 1, "b": 2.0, "c": None}, _contract())
 
 
+def test_validate_catches_python_nan():
+    with pytest.raises(SchemaValidationError) as exc:
+        validate_features({"a": float("nan"), "b": 2.0, "c": "x"}, _contract())
+    assert "a" in exc.value.null_required
+
+
+def test_validate_catches_numpy_nan_scalars():
+    """Regression: NaN values from numpy scalars must also be rejected.
+    Previously the isinstance(v, float) gate let numpy.float32(NaN) through."""
+    np = pytest.importorskip("numpy")
+    for nan_val in (np.float64("nan"), np.float32("nan"), np.nan):
+        with pytest.raises(SchemaValidationError) as exc:
+            validate_features({"a": nan_val, "b": 2.0, "c": "x"}, _contract())
+        assert "a" in exc.value.null_required
+
+
+def test_validate_non_numeric_values_not_treated_as_null():
+    """Strings, bools, lists must not be misclassified as null by the
+    try/except around math.isnan."""
+    validate_features({"a": "hello", "b": True, "c": [1, 2]}, _contract())
+
+
 def test_validate_skips_when_contract_empty():
     """Legacy artifacts with no contract should not block predictions."""
     validate_features({"a": 1}, {})
