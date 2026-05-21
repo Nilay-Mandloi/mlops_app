@@ -109,6 +109,7 @@ jobs:
           TRAINING_REPO_TOKEN:   ${{ secrets.TRAINING_REPO_TOKEN }}
           TRAINING_AUTO_PROMOTE: ${{ inputs.auto_promote }}
           TRIGGER_DATA_ROOT:     ${{ github.workspace }}
+          APP_ADMIN_TOKEN:       ${{ secrets.APP_ADMIN_TOKEN }}
         run: |
           price-forecast-trigger \
             --dataset  "${DATASET_LOCAL}" \
