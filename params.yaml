@@ -27,7 +27,7 @@
 dataset:
   # Unique name for this dataset / project.  Used to scope the feature store
   # and the artifact version counter — keep it consistent across runs.
-  name: "YOUR_DATASET_NAME"
+  name: "store_sales_dataset"
 
   # input_uri is patched automatically by the training workflow from
   # trigger.json.  Leave it blank here.
