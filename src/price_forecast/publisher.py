@@ -54,6 +54,11 @@ def _dispatch_training(trigger_id: str, cfg: AppConfig) -> None:
             "client_payload": {
                 "trigger_id": trigger_id,
                 "auto_promote": cfg.training_auto_promote,
+                # Multi-tenant: training repo reads these from the payload so
+                # each app's run is scoped to its own bucket and namespace.
+                "app_id": cfg.app_id,
+                "artifact_store_bucket": cfg.bucket,
+                "artifact_store_prefix": cfg.stack_id,
             },
         }
     ).encode("utf-8")

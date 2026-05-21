@@ -72,9 +72,12 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl --fail --silent --max-time 4 http://localhost:${APP_PORT}/ready || exit 1
 
-# Gunicorn config: 2 sync workers by default (override via GUNICORN_CMD_ARGS).
-# Sync is right for sklearn/pandas — they're CPU-bound and don't release the GIL.
-# Use --preload only if you've confirmed reload-after-fork is safe; we keep it
-# off here because each worker creates its own ModelStore + S3 client.
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "60", \
+# Single worker + thread pool. Multi-worker forking would give each worker its
+# own ModelStore, reloader thread, and metrics counters — fragmenting Prometheus
+# output and multiplying S3 polls. Scale horizontally via pod replicas instead.
+# sklearn/numpy release the GIL on most matrix ops, so threads give real
+# concurrency for predict latency without duplicating state.
+# Override via GUNICORN_CMD_ARGS if a workload needs a different shape.
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "8", \
+     "--worker-class", "gthread", "--timeout", "60", \
      "--access-logfile", "-", "--error-logfile", "-", "price_forecast.app:create_app()"]

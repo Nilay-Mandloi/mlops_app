@@ -22,13 +22,18 @@ from __future__ import annotations
 import datetime
 import hmac
 import json as _json
+import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from functools import wraps
+from pathlib import Path
 from typing import Any
+
+import boto3
 
 import pandas as pd
 import typer
@@ -246,6 +251,31 @@ def _start_background_reloader(
 
 
 # ---------------------------------------------------------------------------
+# S3 download helper (multi-user trigger flow)
+# ---------------------------------------------------------------------------
+
+def _s3_download_to_dir(s3_uri: str, suffix: str, dest_dir: Path, aws_region: str) -> Path:
+    """Download an s3://bucket/key URI to a temp file inside dest_dir.
+
+    dest_dir must already exist (caller ensures it is within TRIGGER_DATA_ROOT
+    so the path-traversal guard in TriggerTrainRequest still holds).
+    suffix is the file extension including the dot, e.g. '.yaml' or '.parquet'.
+    Returns the local Path of the downloaded file.
+    """
+    parts = s3_uri[5:].split("/", 1)  # strip "s3://"
+    bucket, key = parts[0], parts[1]
+    tmp = tempfile.NamedTemporaryFile(dir=dest_dir, suffix=suffix, delete=False)
+    tmp.close()
+    dest = Path(tmp.name)
+    try:
+        boto3.client("s3", region_name=aws_region).download_file(bucket, key, str(dest))
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    return dest
+
+
+# ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
@@ -460,10 +490,36 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             payload = TriggerTrainRequest.model_validate(request.get_json(silent=True) or {})
         except ValidationError as exc:
             return jsonify(error=exc.errors()), 400
+
+        # Resolve dataset_path and params_path — either use what caller gave us
+        # (local mode) or download from S3 into TRIGGER_DATA_ROOT (S3 mode).
+        trigger_data_root = os.environ.get("TRIGGER_DATA_ROOT", "").strip()
+        tmp_files: list[Path] = []
+
         try:
+            if payload.dataset_s3_uri and payload.params_s3_uri:
+                # ── S3 mode: user provided URIs; download to a temp directory ──
+                dest_dir = Path(trigger_data_root) if trigger_data_root else Path(tempfile.gettempdir())
+                dest_dir.mkdir(parents=True, exist_ok=True)
+
+                dataset_ext = "." + payload.dataset_s3_uri.rsplit(".", 1)[-1].lower()
+                dataset_path = _s3_download_to_dir(
+                    payload.dataset_s3_uri, dataset_ext, dest_dir, cfg.aws_region
+                )
+                tmp_files.append(dataset_path)
+
+                params_path = _s3_download_to_dir(
+                    payload.params_s3_uri, ".yaml", dest_dir, cfg.aws_region
+                )
+                tmp_files.append(params_path)
+            else:
+                # ── Local mode: paths already validated by TriggerTrainRequest ──
+                dataset_path = Path(payload.dataset_path)  # type: ignore[arg-type]
+                params_path = Path(payload.params_path)    # type: ignore[arg-type]
+
             trigger_id, uri = publish_trigger(
-                payload.dataset_path,
-                payload.params_path,
+                dataset_path,
+                params_path,
                 model_family=payload.model_family,
                 description=payload.description,
                 requested_by=request.headers.get("X-User", ""),
@@ -473,11 +529,14 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
         except (FileNotFoundError, ValueError) as exc:
             return jsonify(error=str(exc)), 400
         except RuntimeError as exc:
-            # Covers GitHub dispatch failures (HTTP 4xx/5xx) and S3 upload errors.
             logger.error("trigger-train failed: {}", exc)
             return jsonify(error=str(exc)), 502
         except OSError as exc:
             return jsonify(error=str(exc)), 400
+        finally:
+            for tmp in tmp_files:
+                tmp.unlink(missing_ok=True)
+
         return jsonify(
             TriggerTrainResponse(trigger_id=trigger_id, trigger_uri=uri).model_dump()
         )

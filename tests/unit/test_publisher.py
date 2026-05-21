@@ -85,8 +85,13 @@ def test_dispatch_sends_correct_payload(base_cfg):
     # JSON payload
     body = json.loads(req.data.decode("utf-8"))
     assert body["event_type"] == "train-model"
-    assert body["client_payload"]["trigger_id"] == "tid-123"
-    assert body["client_payload"]["auto_promote"] is False
+    payload = body["client_payload"]
+    assert payload["trigger_id"] == "tid-123"
+    assert payload["auto_promote"] is False
+    # Multi-tenant fields — training repo scopes every S3 key by these.
+    assert payload["app_id"] == "testapp"
+    assert payload["artifact_store_bucket"] == "test-bucket"
+    assert payload["artifact_store_prefix"] == "MLOPS"
 
 
 def test_dispatch_auto_promote_flag_forwarded(base_cfg):

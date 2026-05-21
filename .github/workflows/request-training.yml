@@ -1,25 +1,39 @@
 name: Request Training Run
 
-# Triggers a training run in the training repo by uploading a dataset + params
-# to S3, then firing a repository_dispatch event. The training repo picks up
-# the trigger and runs the full pipeline.
+# Triggers a training run in the training repo.
 #
-# Supports both CSV and Parquet datasets. The file extension from dataset_s3_uri
-# is preserved so the publisher auto-detects the correct dataset_format.
+# Each user provides their OWN dataset and params.yaml uploaded to S3.
+# The workflow downloads both, publishes them to the trigger path, and fires
+# a repository_dispatch to the training repo.  The training repo pulls the
+# trigger and runs the full pipeline (ingest → dataset → features → train →
+# rank_compare → promote).
 #
-# Required secrets:
-#   APP_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
-#   TRAINING_REPO_TOKEN  (PAT with Contents:write on the training repo)
-# Required variables:
-#   APP_ID, APP_MODEL_NAME, TRAINING_REPO  (e.g. "my-org/mlops")
+# Required secrets  (mlops_app repo):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
+#   APP_S3_BUCKET          — bucket where trigger artefacts are uploaded
+#   TRAINING_REPO_TOKEN    — fine-grained GitHub PAT (Contents:write +
+#                            Workflows:write on the training repo only)
+#
+# Required variables (mlops_app repo):
+#   APP_ID          — application scope, e.g. "price_forecast"
+#   APP_MODEL_NAME  — registry model name, e.g. "price_forecast_model"
+#   TRAINING_REPO   — "org/mlops"  (no https://, no .git)
+#
 # Optional variables:
-#   STACK_ID (default: MLOPS), TRAINING_AUTO_PROMOTE (default: false)
+#   STACK_ID              — default "MLOPS"
+#   TRAINING_AUTO_PROMOTE — default "false"
 
 on:
   workflow_dispatch:
     inputs:
+      app_id:
+        description: "Your app identifier — lowercase letters, numbers, hyphens (e.g. alice, bob-sales, app1). Must be unique per user/project."
+        required: true
       dataset_s3_uri:
-        description: "S3 URI of the dataset (CSV or Parquet, e.g. s3://bucket/data/sales.csv)"
+        description: "S3 URI of the user's dataset (CSV or Parquet) — e.g. s3://central-bucket/alice/sales.csv"
+        required: true
+      params_s3_uri:
+        description: "S3 URI of the user's params.yaml — e.g. s3://central-bucket/alice/params.yaml"
         required: true
       model_family:
         description: "Model family to train"
@@ -27,10 +41,6 @@ on:
         default: "regression"
         type: choice
         options: ["regression", "classification", "forecasting"]
-      params_path:
-        description: "Path to params.yaml in this repo (relative to repo root)"
-        required: false
-        default: "params.yaml"
       description:
         description: "Human-readable description for this training run"
         required: false
@@ -65,10 +75,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      # Preserve the file extension from the S3 URI so the publisher correctly
-      # infers the dataset_format (csv vs parquet) from the local filename.
-      # Hardcoding "dataset.parquet" would mislabel CSV files and corrupt the
-      # trigger contract that the training repo reads.
+      # ── Download user's dataset from S3 ────────────────────────────────────
+      # Preserve the file extension (csv / parquet) so the publisher correctly
+      # infers dataset_format from the local filename.
       - name: Download dataset from S3
         run: |
           DATASET_URI="${{ inputs.dataset_s3_uri }}"
@@ -76,9 +85,21 @@ jobs:
           echo "DATASET_LOCAL=dataset.${EXT}" >> "$GITHUB_ENV"
           aws s3 cp "${DATASET_URI}" "dataset.${EXT}"
 
+      # ── Download user's params.yaml from S3 ────────────────────────────────
+      # Users upload their own params.yaml (with their feature columns, target,
+      # metrics, etc.) to S3.  We download it here so the publisher can upload
+      # it to the canonical trigger path alongside the dataset.
+      - name: Download params from S3
+        run: |
+          aws s3 cp "${{ inputs.params_s3_uri }}" params_user.yaml
+          echo "PARAMS_LOCAL=params_user.yaml" >> "$GITHUB_ENV"
+          echo "--- params.yaml preview ---"
+          head -40 params_user.yaml
+
+      # ── Push trigger bundle to S3 + dispatch training repo ─────────────────
       - name: Push training trigger to S3 and dispatch training repo
         env:
-          APP_ID:                ${{ vars.APP_ID }}
+          APP_ID:                ${{ inputs.app_id }}
           APP_S3_BUCKET:         ${{ secrets.APP_S3_BUCKET }}
           APP_MODEL_NAME:        ${{ vars.APP_MODEL_NAME }}
           APP_CHANNEL:           stable
@@ -90,8 +111,8 @@ jobs:
           TRIGGER_DATA_ROOT:     ${{ github.workspace }}
         run: |
           price-forecast-trigger push \
-            --dataset "${DATASET_LOCAL}" \
-            --params "${{ inputs.params_path }}" \
+            --dataset  "${DATASET_LOCAL}" \
+            --params   "${PARAMS_LOCAL}" \
             --model-family "${{ inputs.model_family }}" \
-            --description "${{ inputs.description }}" \
+            --description  "${{ inputs.description }}" \
             --requested-by "${{ github.actor }}"
