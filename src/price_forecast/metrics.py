@@ -27,7 +27,7 @@ class Metrics:
     reload_total: int = 0
     reload_errors: int = 0
     # Gauges
-    model_loaded: int = 0           # 0 = not loaded, 1 = loaded
+    model_loaded: int = 0  # 0 = not loaded, 1 = loaded
     last_reload_unixtime: float = 0.0
     # Latency (sum + count for an "average" view; histograms would need bucketing)
     predict_latency_sum_ms: float = 0.0

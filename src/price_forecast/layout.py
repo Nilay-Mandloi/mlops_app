@@ -59,15 +59,14 @@ def _check_app_id(app_id: str) -> str:
     that would cause silent cross-tenant S3 collisions or key escapes.
     """
     if not isinstance(app_id, str) or not APP_ID_RE.match(app_id):
-        raise ValueError(
-            f"app_id must match ^[a-z0-9][a-z0-9_-]{{0,62}}$; got {app_id!r}"
-        )
+        raise ValueError(f"app_id must match ^[a-z0-9][a-z0-9_-]{{0,62}}$; got {app_id!r}")
     return app_id
 
 
 # ---------------------------------------------------------------------------
 # Artifact snapshots (immutable, versioned, app-scoped)
 # ---------------------------------------------------------------------------
+
 
 def artifact_key(app_id: str, artifact_version: str | int, filename: str) -> str:
     return f"output/artifacts/{_check_app_id(app_id)}/{_vtag(artifact_version)}/champion/{filename}"
@@ -103,6 +102,7 @@ def artifact_counter_key(app_id: str, dataset_name: str) -> str:
 # Reports (immutable, versioned, app-scoped)
 # ---------------------------------------------------------------------------
 
+
 def report_key(app_id: str, artifact_version: str | int, report_name: str) -> str:
     return f"output/reports/{_check_app_id(app_id)}/{_vtag(artifact_version)}/{report_name}"
 
@@ -111,15 +111,14 @@ def report_key(app_id: str, artifact_version: str | int, report_name: str) -> st
 # Registry pointers (mutable — the only mutable surface in the store)
 # ---------------------------------------------------------------------------
 
+
 def registry_key(app_id: str, model_name: str, filename: str) -> str:
     return f"output/registry/{_check_app_id(app_id)}/{model_name}/{filename}"
 
 
 def pointer_key(app_id: str, model_name: str, pointer_name: str) -> str:
     """Mutable pointer key for stable.json / latest.json / canary.json / etc."""
-    return (
-        f"output/registry/{_check_app_id(app_id)}/{model_name}/pointers/{pointer_name}.json"
-    )
+    return f"output/registry/{_check_app_id(app_id)}/{model_name}/pointers/{pointer_name}.json"
 
 
 def pointer_history_key(
@@ -145,6 +144,7 @@ def pointer_history_key(
 # Lock keys (promotion concurrency)
 # ---------------------------------------------------------------------------
 
+
 def lock_key(app_id: str, lock_name: str) -> str:
     return f"output/locks/{_check_app_id(app_id)}/{lock_name}.lock"
 
@@ -153,10 +153,9 @@ def lock_key(app_id: str, lock_name: str) -> str:
 # Feature store (dataset snapshots) — app-scoped
 # ---------------------------------------------------------------------------
 
+
 def feature_store_input_manifest_key(app_id: str, dataset_name: str, version: str) -> str:
-    return (
-        f"feature-store/{_check_app_id(app_id)}/input/{dataset_name}/manifests/{version}.json"
-    )
+    return f"feature-store/{_check_app_id(app_id)}/input/{dataset_name}/manifests/{version}.json"
 
 
 # ---------------------------------------------------------------------------

@@ -44,7 +44,7 @@ _SKIP = pytest.mark.skipif(
 
 # Strip both styles of vendor header:
 #   # Vendored copy ... (comment block followed by blank line)
-_VENDOR_COMMENT_RE = re.compile(r'^(?:#[^\n]*\n)+\n')
+_VENDOR_COMMENT_RE = re.compile(r"^(?:#[^\n]*\n)+\n")
 
 
 def _strip_vendor_header(text: str) -> str:
@@ -58,7 +58,7 @@ def _normalise(text: str) -> str:
 @_SKIP
 def test_contracts_py_in_sync():
     training = (_MLOPS_ROOT / "src/quantity_forecast/contracts.py").read_text(encoding="utf-8")
-    serving  = (_REPO_ROOT  / "src/price_forecast/contracts.py").read_text(encoding="utf-8")
+    serving = (_REPO_ROOT / "src/price_forecast/contracts.py").read_text(encoding="utf-8")
     assert _normalise(training) == _normalise(serving), (
         "contracts.py has drifted from the training repo.\n"
         "Sync with:\n"
@@ -69,7 +69,7 @@ def test_contracts_py_in_sync():
 @_SKIP
 def test_layout_py_in_sync():
     training = (_MLOPS_ROOT / "src/quantity_forecast/layout.py").read_text(encoding="utf-8")
-    serving  = (_REPO_ROOT  / "src/price_forecast/layout.py").read_text(encoding="utf-8")
+    serving = (_REPO_ROOT / "src/price_forecast/layout.py").read_text(encoding="utf-8")
     assert _normalise(training) == _normalise(serving), (
         "layout.py has drifted from the training repo.\n"
         "Sync with:\n"

@@ -15,6 +15,7 @@ from price_forecast.publisher import _dispatch_training
 # Minimal AppConfig fixture
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def base_cfg() -> AppConfig:
     return AppConfig(
@@ -45,6 +46,7 @@ def base_cfg() -> AppConfig:
 # _dispatch_training — skip path
 # ---------------------------------------------------------------------------
 
+
 def test_dispatch_skipped_when_no_repo(base_cfg, caplog):
     cfg = replace(base_cfg, training_repo="", training_repo_token="ghp_x")
     with patch("urllib.request.urlopen") as mock_open:
@@ -62,6 +64,7 @@ def test_dispatch_skipped_when_no_token(base_cfg, caplog):
 # ---------------------------------------------------------------------------
 # _dispatch_training — success path
 # ---------------------------------------------------------------------------
+
 
 def test_dispatch_sends_correct_payload(base_cfg):
     mock_resp = MagicMock()
@@ -111,6 +114,7 @@ def test_dispatch_auto_promote_flag_forwarded(base_cfg):
 # _dispatch_training — error paths
 # ---------------------------------------------------------------------------
 
+
 def test_dispatch_raises_on_http_error(base_cfg):
     http_err = urllib.error.HTTPError(
         url="https://api.github.com/repos/my-org/mlops/dispatches",
@@ -119,16 +123,18 @@ def test_dispatch_raises_on_http_error(base_cfg):
         hdrs=MagicMock(),  # type: ignore[arg-type]
         fp=BytesIO(b""),
     )
-    with patch("urllib.request.urlopen", side_effect=http_err), pytest.raises(
-        RuntimeError, match="GitHub dispatch failed: HTTP 401"
+    with (
+        patch("urllib.request.urlopen", side_effect=http_err),
+        pytest.raises(RuntimeError, match="GitHub dispatch failed: HTTP 401"),
     ):
         _dispatch_training("tid-789", base_cfg)
 
 
 def test_dispatch_raises_on_network_error(base_cfg):
-    with patch(
-        "urllib.request.urlopen", side_effect=OSError("connection refused")
-    ), pytest.raises(RuntimeError, match="GitHub dispatch failed after retry"):
+    with (
+        patch("urllib.request.urlopen", side_effect=OSError("connection refused")),
+        pytest.raises(RuntimeError, match="GitHub dispatch failed after retry"),
+    ):
         _dispatch_training("tid-000", base_cfg)
 
 
@@ -138,7 +144,8 @@ def test_dispatch_raises_on_unexpected_status(base_cfg):
     mock_resp.__exit__ = MagicMock(return_value=False)
     mock_resp.status = 500
 
-    with patch("urllib.request.urlopen", return_value=mock_resp), pytest.raises(
-        RuntimeError, match="unexpected status 500"
+    with (
+        patch("urllib.request.urlopen", return_value=mock_resp),
+        pytest.raises(RuntimeError, match="unexpected status 500"),
     ):
         _dispatch_training("tid-999", base_cfg)

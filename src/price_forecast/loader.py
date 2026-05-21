@@ -33,14 +33,27 @@ from price_forecast.layout import artifact_model_pkl_key, pointer_key
 
 T = TypeVar("T")
 
-_RETRYABLE_S3_CODES = frozenset({
-    "InternalError", "ServiceUnavailable", "SlowDown", "RequestTimeout",
-    "RequestTimeoutException", "ProvisionedThroughputExceededException",
-    "ThrottlingException", "Throttling", "500", "502", "503", "504",
-})
+_RETRYABLE_S3_CODES = frozenset(
+    {
+        "InternalError",
+        "ServiceUnavailable",
+        "SlowDown",
+        "RequestTimeout",
+        "RequestTimeoutException",
+        "ProvisionedThroughputExceededException",
+        "ThrottlingException",
+        "Throttling",
+        "500",
+        "502",
+        "503",
+        "504",
+    }
+)
 
 
-def _retry_s3(label: str, func: Callable[[], T], *, attempts: int = 4, base_delay: float = 0.5) -> T:
+def _retry_s3(
+    label: str, func: Callable[[], T], *, attempts: int = 4, base_delay: float = 0.5
+) -> T:
     """Exponential backoff with jitter for transient S3 errors.
 
     Distinct from boto3's built-in retries (which cover the low-level call)
@@ -62,15 +75,22 @@ def _retry_s3(label: str, func: Callable[[], T], *, attempts: int = 4, base_dela
 
         if attempt == attempts - 1:
             break
-        delay = base_delay * (2 ** attempt) + random.uniform(0, base_delay)
-        logger.warning("{} failed (attempt {}/{}): {} — retrying in {:.1f}s",
-                       label, attempt + 1, attempts, last_exc, delay)
+        delay = base_delay * (2**attempt) + random.uniform(0, base_delay)
+        logger.warning(
+            "{} failed (attempt {}/{}): {} — retrying in {:.1f}s",
+            label,
+            attempt + 1,
+            attempts,
+            last_exc,
+            delay,
+        )
         time.sleep(delay)
 
     if last_exc is None:
-        raise RuntimeError(f"{label}: retry loop exhausted with no recorded exception (bug in _retry_s3)")
+        raise RuntimeError(
+            f"{label}: retry loop exhausted with no recorded exception (bug in _retry_s3)"
+        )
     raise last_exc
-
 
 
 def _sha256_file(path: Path) -> str:
@@ -150,7 +170,7 @@ class ModelStore:
             raise RuntimeError(
                 f"Pointer manifest_uri '{uri}' does not belong to bucket '{self._cfg.bucket}'."
             )
-        key = uri[len(prefix):]
+        key = uri[len(prefix) :]
         stack_prefix = self._cfg.prefix.strip("/")
         if stack_prefix:
             expected = f"{stack_prefix}/"
@@ -158,7 +178,7 @@ class ModelStore:
                 raise RuntimeError(
                     f"Pointer manifest_uri '{uri}' does not belong to stack prefix '{stack_prefix}'."
                 )
-            key = key[len(expected):]
+            key = key[len(expected) :]
         return key
 
     # ------------------------------------------------------------------
