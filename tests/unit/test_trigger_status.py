@@ -69,6 +69,7 @@ def client(mock_store):
 # Format validation
 # ---------------------------------------------------------------------------
 
+
 def test_invalid_trigger_id_returns_400(client):
     c, _ = client
     resp = c.get("/trigger-status/bad-id!!", headers=_ADMIN_HDR)
@@ -89,9 +90,14 @@ def test_missing_trigger_returns_404(client):
 # Status: failed
 # ---------------------------------------------------------------------------
 
+
 def test_returns_failed_when_failure_marker_exists(client):
     c, store = client
-    failure_payload = {"status": "failed", "reason": "pipeline blew up", "trigger_id": _VALID_TRIGGER_ID}
+    failure_payload = {
+        "status": "failed",
+        "reason": "pipeline blew up",
+        "trigger_id": _VALID_TRIGGER_ID,
+    }
 
     def _get_json(key):
         if "trigger.json" in key:
@@ -130,6 +136,7 @@ def test_failed_marker_overrides_completed_pointer(client):
 # ---------------------------------------------------------------------------
 # Status: running
 # ---------------------------------------------------------------------------
+
 
 def test_returns_running_when_running_marker_exists_no_pointer(client):
     c, store = client
@@ -192,6 +199,7 @@ def test_failed_overrides_running(client):
 # Status: pending
 # ---------------------------------------------------------------------------
 
+
 def test_returns_pending_when_no_pointer(client):
     c, store = client
 
@@ -233,6 +241,7 @@ def test_returns_pending_with_baseline_when_version_unchanged(client):
 # ---------------------------------------------------------------------------
 # Status: completed
 # ---------------------------------------------------------------------------
+
 
 def test_returns_completed_with_baseline_when_version_changed(client):
     c, store = client
@@ -297,6 +306,7 @@ def test_returns_pending_via_timestamp_fallback_when_pointer_older(client):
 # ---------------------------------------------------------------------------
 # Admin auth
 # ---------------------------------------------------------------------------
+
 
 def test_trigger_status_requires_admin_token(client):
     c, _ = client

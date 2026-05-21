@@ -38,6 +38,7 @@ def _utcnow_iso() -> str:
 # Path: output/artifacts/v{N}/champion/manifest.json
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ArtifactManifest:
     """Immutable per-version metadata. Sits next to model.pkl in S3.
@@ -83,6 +84,7 @@ class ArtifactManifest:
 # Pointer — mutable. The ONLY thing that flips when a new model is promoted.
 # Path: output/registry/{model}/pointers/{stable|latest|canary}.json
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class PointerFile:
@@ -131,6 +133,7 @@ class PointerFile:
 # Path: triggers/{trigger_id}/trigger.json (with dataset.parquet, params.yaml
 # alongside)
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class TriggerFile:

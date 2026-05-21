@@ -74,15 +74,17 @@ def test_trigger_round_trip():
 
 def test_from_dict_tolerates_unknown_fields():
     """Forward-compat: an older app loading a payload with new fields must not crash."""
-    p = PointerFile.from_dict({
-        "app_id": "APP1",
-        "version_id": "v42",
-        "run_id": "abc",
-        "registry_version": "5",
-        "manifest_uri": "s3://x",
-        "status": "stable",
-        "future_field_we_dont_know_yet": "should_be_ignored",
-    })
+    p = PointerFile.from_dict(
+        {
+            "app_id": "APP1",
+            "version_id": "v42",
+            "run_id": "abc",
+            "registry_version": "5",
+            "manifest_uri": "s3://x",
+            "status": "stable",
+            "future_field_we_dont_know_yet": "should_be_ignored",
+        }
+    )
     assert p.version_id == "v42"
     assert p.app_id == "APP1"
 
@@ -90,11 +92,13 @@ def test_from_dict_tolerates_unknown_fields():
 def test_manifest_missing_app_id_raises():
     """A payload that omits app_id must not silently coerce to empty string."""
     with pytest.raises(TypeError):
-        ArtifactManifest.from_dict({
-            "run_id": "r",
-            "artifact_version": "v1",
-            "registry_version": "1",
-            "model_name": "m",
-            "model_type": "t",
-            "schema_hash": "h",
-        })
+        ArtifactManifest.from_dict(
+            {
+                "run_id": "r",
+                "artifact_version": "v1",
+                "registry_version": "1",
+                "model_name": "m",
+                "model_type": "t",
+                "schema_hash": "h",
+            }
+        )

@@ -26,8 +26,14 @@ from typing import Any
 class SchemaValidationError(ValueError):
     """Raised when a request payload does not match the model schema."""
 
-    def __init__(self, message: str, *, missing: list[str] | None = None,
-                 unexpected: list[str] | None = None, null_required: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing: list[str] | None = None,
+        unexpected: list[str] | None = None,
+        null_required: list[str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.missing = missing or []
         self.unexpected = unexpected or []
@@ -98,8 +104,7 @@ def validate_features(
             return False
 
     null_required = sorted(
-        col for col in expected_set & got_set
-        if _is_null(features[col]) and col not in nullable
+        col for col in expected_set & got_set if _is_null(features[col]) and col not in nullable
     )
 
     if missing or unexpected or null_required:

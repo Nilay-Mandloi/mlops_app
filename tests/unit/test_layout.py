@@ -15,7 +15,9 @@ APP = "app1"
 
 
 def test_artifact_model_pkl_key_shape():
-    assert layout.artifact_model_pkl_key(APP, "42") == "output/artifacts/app1/v42/champion/model.pkl"
+    assert (
+        layout.artifact_model_pkl_key(APP, "42") == "output/artifacts/app1/v42/champion/model.pkl"
+    )
     assert layout.artifact_model_pkl_key(APP, 7) == "output/artifacts/app1/v7/champion/model.pkl"
     assert layout.artifact_model_pkl_key(APP, "v9") == "output/artifacts/app1/v9/champion/model.pkl"
 
@@ -65,10 +67,7 @@ def test_trigger_failure_key_shape():
 
 
 def test_trigger_metadata_key_shape():
-    assert (
-        layout.trigger_metadata_key(APP, "tid")
-        == "triggers/app1/tid/trigger.json"
-    )
+    assert layout.trigger_metadata_key(APP, "tid") == "triggers/app1/tid/trigger.json"
 
 
 @pytest.mark.parametrize("bad", ["", " ", " app", "a/b", "..", ".x"])

@@ -84,9 +84,7 @@ def _dispatch_training(trigger_id: str, cfg: AppConfig) -> None:
         except urllib.error.HTTPError as exc:
             if exc.code in _RETRYABLE_HTTP and attempt == 0:
                 last_exc = exc
-                logger.warning(
-                    "GitHub dispatch HTTP {} (attempt 1/2), retrying in 2s", exc.code
-                )
+                logger.warning("GitHub dispatch HTTP {} (attempt 1/2), retrying in 2s", exc.code)
                 time.sleep(2)
             else:
                 raise RuntimeError(
@@ -114,7 +112,9 @@ def _dispatch_training(trigger_id: str, cfg: AppConfig) -> None:
         )
     logger.info(
         "Dispatched train-model event to {} (trigger_id={} auto_promote={})",
-        cfg.training_repo, trigger_id, cfg.training_auto_promote,
+        cfg.training_repo,
+        trigger_id,
+        cfg.training_auto_promote,
     )
 
 
@@ -248,7 +248,10 @@ def publish_trigger(
     trigger_uri = f"s3://{cfg.bucket}/{cfg.prefix.strip('/')}/triggers/{cfg.app_id}/{trigger_id}/"
     logger.info(
         "Published trigger {} (app_id={}, format={}) -> {}",
-        trigger_id, cfg.app_id, fmt, trigger_uri,
+        trigger_id,
+        cfg.app_id,
+        fmt,
+        trigger_uri,
     )
 
     # Notify the training repo so it can start a training run immediately.
@@ -293,14 +296,18 @@ def push_cmd(
     description: str = typer.Option("", "--description"),
     requested_by: str = typer.Option("", "--requested-by"),
     dataset_format: str | None = typer.Option(
-        None, "--dataset-format",
+        None,
+        "--dataset-format",
         help="Override auto-detection: 'csv' or 'parquet'. Default: inferred from file extension.",
     ),
 ) -> None:
     """Push a trigger folder from local files."""
     trigger_id, uri = publish_trigger(
-        dataset, params, model_family=model_family,
-        description=description, requested_by=requested_by,
+        dataset,
+        params,
+        model_family=model_family,
+        description=description,
+        requested_by=requested_by,
         dataset_format=dataset_format,
     )
     typer.echo(f"trigger_id: {trigger_id}")

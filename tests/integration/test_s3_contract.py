@@ -29,11 +29,11 @@ import pytest
 moto = pytest.importorskip("moto")
 boto3 = pytest.importorskip("boto3")
 
-from moto import mock_aws
+from moto import mock_aws  # noqa: E402
 
-from price_forecast.config import AppConfig
-from price_forecast.contracts import ArtifactManifest, PointerFile, TriggerFile
-from price_forecast.layout import (
+from price_forecast.config import AppConfig  # noqa: E402
+from price_forecast.contracts import ArtifactManifest, PointerFile, TriggerFile  # noqa: E402
+from price_forecast.layout import (  # noqa: E402
     artifact_manifest_key,
     artifact_model_pkl_key,
     artifact_requirements_key,
@@ -43,7 +43,7 @@ from price_forecast.layout import (
     trigger_metadata_key,
     trigger_params_key,
 )
-from price_forecast.loader import ModelStore
+from price_forecast.loader import ModelStore  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -117,6 +117,7 @@ def _sha256_bytes(b: bytes) -> str:
 # Trigger contract
 # ---------------------------------------------------------------------------
 
+
 def test_trigger_layout_is_app_scoped(s3, app_cfg, tmp_path):
     """Publisher writes all three keys under triggers/{app_id}/{trigger_id}/."""
     from price_forecast import publisher
@@ -128,9 +129,7 @@ def test_trigger_layout_is_app_scoped(s3, app_cfg, tmp_path):
 
     publisher.load_config = lambda: app_cfg
 
-    trigger_id, uri = publisher.publish_trigger(
-        dataset, params, model_family="regression"
-    )
+    trigger_id, uri = publisher.publish_trigger(dataset, params, model_family="regression")
 
     # The URI itself encodes the app scope.
     assert f"/triggers/{APP_ID}/{trigger_id}/" in uri
@@ -156,7 +155,9 @@ def test_trigger_marker_carries_app_id(s3, app_cfg, tmp_path):
     publisher.load_config = lambda: app_cfg
     trigger_id, _ = publisher.publish_trigger(dataset, params, model_family="regression")
 
-    body = s3.get_object(Bucket=BUCKET, Key=_full(trigger_metadata_key(APP_ID, trigger_id)))["Body"].read()
+    body = s3.get_object(Bucket=BUCKET, Key=_full(trigger_metadata_key(APP_ID, trigger_id)))[
+        "Body"
+    ].read()
     marker = TriggerFile.from_dict(json.loads(body))
     assert marker.app_id == APP_ID
     assert marker.dataset_format == "parquet"
@@ -179,16 +180,22 @@ def test_csv_trigger_uses_csv_key_and_marker_format(s3, app_cfg, tmp_path):
     s3.head_object(Bucket=BUCKET, Key=_full(trigger_dataset_key(APP_ID, trigger_id, "csv")))
 
     # The marker declares csv, and dataset_uri points at the .csv key.
-    body = s3.get_object(Bucket=BUCKET, Key=_full(trigger_metadata_key(APP_ID, trigger_id)))["Body"].read()
+    body = s3.get_object(Bucket=BUCKET, Key=_full(trigger_metadata_key(APP_ID, trigger_id)))[
+        "Body"
+    ].read()
     marker = TriggerFile.from_dict(json.loads(body))
     assert marker.dataset_format == "csv"
     assert marker.dataset_uri.endswith(".csv")
 
     # Round-trip content: what we PUT is what's stored. Use splitlines so we
     # don't care about LF vs CRLF (Windows tempfile writes can introduce CR).
-    fetched = s3.get_object(
-        Bucket=BUCKET, Key=_full(trigger_dataset_key(APP_ID, trigger_id, "csv"))
-    )["Body"].read().decode("utf-8")
+    fetched = (
+        s3.get_object(Bucket=BUCKET, Key=_full(trigger_dataset_key(APP_ID, trigger_id, "csv")))[
+            "Body"
+        ]
+        .read()
+        .decode("utf-8")
+    )
     assert fetched.splitlines()[0] == "id,y"
 
 
@@ -250,6 +257,7 @@ def test_two_apps_publish_to_independent_trigger_dirs(s3, monkeypatch, tmp_path)
 # ---------------------------------------------------------------------------
 # Pointer/manifest/pkl contract
 # ---------------------------------------------------------------------------
+
 
 class _ToyModel:
     def predict(self, X):
@@ -323,9 +331,9 @@ def test_loader_refuses_cross_app_pointer(s3, app_cfg):
     # Stage an artifact set for APP2 first.
     _publish_artifact_set(s3, version="v1", app_id=APP_ID_OTHER, run_id="r2")
     # Now hand-place a pointer at APP1's pointer key but with APP2's payload.
-    body = s3.get_object(
-        Bucket=BUCKET, Key=_full(pointer_key(APP_ID_OTHER, MODEL_NAME, "stable"))
-    )["Body"].read()
+    body = s3.get_object(Bucket=BUCKET, Key=_full(pointer_key(APP_ID_OTHER, MODEL_NAME, "stable")))[
+        "Body"
+    ].read()
     _put_json(s3, pointer_key(APP_ID, MODEL_NAME, "stable"), json.loads(body))
 
     store = ModelStore(app_cfg)
@@ -338,9 +346,14 @@ def test_loader_refuses_cross_app_manifest(s3, app_cfg):
     _publish_artifact_set(s3, version="v1")
     # Overwrite the manifest with one claiming APP2.
     bad_manifest = ArtifactManifest(
-        app_id=APP_ID_OTHER, run_id="r", artifact_version="v1",
-        registry_version="5", model_name=MODEL_NAME, model_type="toy",
-        schema_hash="h", schema_contract={"feature_columns": ["a"]},
+        app_id=APP_ID_OTHER,
+        run_id="r",
+        artifact_version="v1",
+        registry_version="5",
+        model_name=MODEL_NAME,
+        model_type="toy",
+        schema_hash="h",
+        schema_contract={"feature_columns": ["a"]},
         artifact_checksums={"model.pkl": "x"},
     )
     _put_json(s3, artifact_manifest_key(APP_ID, "v1"), bad_manifest.to_dict())
@@ -448,6 +461,7 @@ def test_loader_in_app2_ignores_app1_artifacts(s3, monkeypatch):
 # publish_trigger — upload failure + rollback
 # ---------------------------------------------------------------------------
 
+
 class _FailingUploader:
     """Wraps a boto3 S3 client; makes upload_file raise on the Nth call."""
 
@@ -467,9 +481,7 @@ class _FailingUploader:
 
 
 def _trigger_keys_in_s3(s3, trigger_id: str) -> list[str]:
-    resp = s3.list_objects_v2(
-        Bucket=BUCKET, Prefix=f"{PREFIX}/triggers/{APP_ID}/{trigger_id}/"
-    )
+    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{PREFIX}/triggers/{APP_ID}/{trigger_id}/")
     return [obj["Key"] for obj in resp.get("Contents", [])]
 
 

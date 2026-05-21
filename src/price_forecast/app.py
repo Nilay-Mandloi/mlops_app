@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Any
 
 import boto3
-
 import pandas as pd
 import typer
 from flask import Flask, Response, g, jsonify, make_response, render_template, request
@@ -66,6 +65,7 @@ from price_forecast.validation import SchemaValidationError, validate_features
 # Logging configuration
 # ---------------------------------------------------------------------------
 
+
 def _configure_logging(cfg: AppConfig) -> None:
     """Reconfigure loguru once at startup. Idempotent.
 
@@ -74,6 +74,7 @@ def _configure_logging(cfg: AppConfig) -> None:
     """
     logger.remove()
     if cfg.log_format == "json":
+
         def _json_sink(message):
             record = message.record
             payload = {
@@ -87,19 +88,21 @@ def _configure_logging(cfg: AppConfig) -> None:
                 payload["exception"] = str(record["exception"].value)
             sys.stdout.write(_json.dumps(payload) + "\n")
             sys.stdout.flush()
+
         logger.add(_json_sink, level="INFO")
     else:
         logger.add(
             sys.stdout,
             level="INFO",
             format="<green>{time:HH:mm:ss}</green> <level>{level: <8}</level> "
-                   "<cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+            "<cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
         )
 
 
 # ---------------------------------------------------------------------------
 # Auth helper
 # ---------------------------------------------------------------------------
+
 
 def _require_admin(cfg: AppConfig):
     def decorator(view):
@@ -112,7 +115,9 @@ def _require_admin(cfg: AppConfig):
             if not hmac.compare_digest(token, cfg.admin_token):
                 return jsonify(error="invalid admin token"), 401
             return view(*args, **kwargs)
+
         return wrapped
+
     return decorator
 
 
@@ -184,6 +189,7 @@ function go() {
 # CORS (minimal — no flask-cors dep)
 # ---------------------------------------------------------------------------
 
+
 def _attach_cors(flask_app: Flask, allowed: str) -> None:
     if not allowed:
         return
@@ -195,7 +201,9 @@ def _attach_cors(flask_app: Flask, allowed: str) -> None:
         if origin and (origin in origins or "*" in origins):
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Token, X-Request-Id"
+            response.headers["Access-Control-Allow-Headers"] = (
+                "Content-Type, X-Admin-Token, X-Request-Id"
+            )
             response.headers["Vary"] = "Origin"
         return response
 
@@ -209,6 +217,7 @@ def _attach_cors(flask_app: Flask, allowed: str) -> None:
 # Background reloader
 # ---------------------------------------------------------------------------
 
+
 def _start_background_reloader(
     store: ModelStore,
     metrics: Metrics,
@@ -220,6 +229,7 @@ def _start_background_reloader(
     Stops cleanly when stop_event is set (e.g. during test teardown or graceful
     shutdown). Without a stop_event the thread runs for the lifetime of the process.
     """
+
     def _loop():
         while stop_event is None or not stop_event.is_set():
             if stop_event is not None:
@@ -254,6 +264,7 @@ def _start_background_reloader(
 # S3 download helper (multi-user trigger flow)
 # ---------------------------------------------------------------------------
 
+
 def _s3_download_to_dir(s3_uri: str, suffix: str, dest_dir: Path, aws_region: str) -> Path:
     """Download an s3://bucket/key URI to a temp file inside dest_dir.
 
@@ -264,9 +275,8 @@ def _s3_download_to_dir(s3_uri: str, suffix: str, dest_dir: Path, aws_region: st
     """
     parts = s3_uri[5:].split("/", 1)  # strip "s3://"
     bucket, key = parts[0], parts[1]
-    tmp = tempfile.NamedTemporaryFile(dir=dest_dir, suffix=suffix, delete=False)
-    tmp.close()
-    dest = Path(tmp.name)
+    with tempfile.NamedTemporaryFile(dir=dest_dir, suffix=suffix, delete=False) as tmp:
+        dest = Path(tmp.name)
     try:
         boto3.client("s3", region_name=aws_region).download_file(bucket, key, str(dest))
     except Exception:
@@ -278,6 +288,7 @@ def _s3_download_to_dir(s3_uri: str, suffix: str, dest_dir: Path, aws_region: st
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
+
 
 def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) -> Flask:
     cfg = cfg or load_config()
@@ -301,8 +312,13 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             "Boot: no pointer at s3://{}/{}/output/registry/{}/{}/pointers/{}.json — "
             "starting in standby. Background reloader will retry every {}s "
             "for up to {}s before logs escalate.",
-            cfg.bucket, cfg.stack_id, cfg.app_id, cfg.model_name, cfg.channel,
-            cfg.reload_interval_s, cfg.startup_grace_seconds,
+            cfg.bucket,
+            cfg.stack_id,
+            cfg.app_id,
+            cfg.model_name,
+            cfg.channel,
+            cfg.reload_interval_s,
+            cfg.startup_grace_seconds,
         )
 
     if cfg.reload_interval_s > 0:
@@ -330,11 +346,18 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             response.headers["X-Request-Id"] = g.request_id
             loaded = store.current_or_none()
             response.headers["X-Model-Version"] = loaded.version_id if loaded else "none"
-            log_fn = logger.debug if request.path in ("/health", "/ready", "/metrics") else logger.info
+            log_fn = (
+                logger.debug if request.path in ("/health", "/ready", "/metrics") else logger.info
+            )
             log_fn(
                 "{} {} -> {} in {:.1f}ms rid={} mv={} app={}",
-                request.method, request.path, response.status_code, elapsed_ms,
-                g.request_id, response.headers["X-Model-Version"], cfg.app_id,
+                request.method,
+                request.path,
+                response.status_code,
+                elapsed_ms,
+                g.request_id,
+                response.headers["X-Model-Version"],
+                cfg.app_id,
             )
         except Exception as exc:
             logger.warning("request logging hook failed: {}", exc)
@@ -344,7 +367,9 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
 
     @flask_app.errorhandler(413)
     def _too_large(_exc):
-        return jsonify(error=f"request body exceeds APP_MAX_REQUEST_BYTES={cfg.max_request_bytes}"), 413
+        return jsonify(
+            error=f"request body exceeds APP_MAX_REQUEST_BYTES={cfg.max_request_bytes}"
+        ), 413
 
     # ----- routes -----
 
@@ -401,7 +426,9 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             return jsonify(error="model not loaded yet (standby)"), 503
 
         try:
-            validate_features(payload.features, loaded.manifest.schema_contract, strict=cfg.strict_schema)
+            validate_features(
+                payload.features, loaded.manifest.schema_contract, strict=cfg.strict_schema
+            )
         except SchemaValidationError as exc:
             elapsed_ms = (time.perf_counter_ns() - t0) / 1e6
             metrics.inc_predict(elapsed_ms, ok=False, schema_error=True)
@@ -421,7 +448,9 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
 
         elapsed_ms = (time.perf_counter_ns() - t0) / 1e6
         metrics.inc_predict(elapsed_ms, ok=True)
-        return jsonify(PredictResponse(prediction=pred, model_version=loaded.version_id).model_dump())
+        return jsonify(
+            PredictResponse(prediction=pred, model_version=loaded.version_id).model_dump()
+        )
 
     @flask_app.post("/predict/batch")
     def predict_batch():
@@ -499,7 +528,9 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
         try:
             if payload.dataset_s3_uri and payload.params_s3_uri:
                 # ── S3 mode: user provided URIs; download to a temp directory ──
-                dest_dir = Path(trigger_data_root) if trigger_data_root else Path(tempfile.gettempdir())
+                dest_dir = (
+                    Path(trigger_data_root) if trigger_data_root else Path(tempfile.gettempdir())
+                )
                 dest_dir.mkdir(parents=True, exist_ok=True)
 
                 dataset_ext = "." + payload.dataset_s3_uri.rsplit(".", 1)[-1].lower()
@@ -515,7 +546,7 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             else:
                 # ── Local mode: paths already validated by TriggerTrainRequest ──
                 dataset_path = Path(payload.dataset_path)  # type: ignore[arg-type]
-                params_path = Path(payload.params_path)    # type: ignore[arg-type]
+                params_path = Path(payload.params_path)  # type: ignore[arg-type]
 
             trigger_id, uri = publish_trigger(
                 dataset_path,
@@ -537,9 +568,7 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             for tmp in tmp_files:
                 tmp.unlink(missing_ok=True)
 
-        return jsonify(
-            TriggerTrainResponse(trigger_id=trigger_id, trigger_uri=uri).model_dump()
-        )
+        return jsonify(TriggerTrainResponse(trigger_id=trigger_id, trigger_uri=uri).model_dump())
 
     _TRIGGER_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
 
@@ -610,9 +639,9 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             # Fallback: compare pointer timestamp against trigger creation time.
             ts_str = trigger_id[:16]
             try:
-                trigger_created_at = datetime.datetime.strptime(
-                    ts_str, "%Y%m%dT%H%M%SZ"
-                ).replace(tzinfo=datetime.timezone.utc)
+                trigger_created_at = datetime.datetime.strptime(ts_str, "%Y%m%dT%H%M%SZ").replace(
+                    tzinfo=datetime.timezone.utc
+                )
             except ValueError:
                 return jsonify(error="cannot parse trigger_id timestamp"), 400
             completed = False
@@ -657,7 +686,8 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
         m = metrics
         avg_lat = (
             m.predict_latency_sum_ms / m.predict_latency_count
-            if m.predict_latency_count > 0 else 0.0
+            if m.predict_latency_count > 0
+            else 0.0
         )
         model_section: dict[str, Any] = {"status": "standby"}
         if loaded is not None:
@@ -676,31 +706,33 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
                 "channel": cfg.channel,
                 "schema_contract": loaded.manifest.schema_contract,
             }
-        return jsonify({
-            "model": model_section,
-            "app": {
-                "app_id": cfg.app_id,
-                "env": cfg.env,
-                "model_name": cfg.model_name,
-                "bucket": cfg.bucket,
-                "stack_id": cfg.stack_id,
-                "channel": cfg.channel,
-            },
-            "metrics": {
-                "predict_total": m.predict_total,
-                "predict_errors": m.predict_errors,
-                "predict_schema_errors": m.predict_schema_errors,
-                "predict_latency_count": m.predict_latency_count,
-                "batch_predict_total": m.batch_predict_total,
-                "batch_predict_errors": m.batch_predict_errors,
-                "reload_total": m.reload_total,
-                "reload_errors": m.reload_errors,
-                "model_loaded": m.model_loaded,
-                "last_reload_unixtime": m.last_reload_unixtime,
-                "predict_avg_latency_ms": round(avg_lat, 2),
-            },
-            "server_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        })
+        return jsonify(
+            {
+                "model": model_section,
+                "app": {
+                    "app_id": cfg.app_id,
+                    "env": cfg.env,
+                    "model_name": cfg.model_name,
+                    "bucket": cfg.bucket,
+                    "stack_id": cfg.stack_id,
+                    "channel": cfg.channel,
+                },
+                "metrics": {
+                    "predict_total": m.predict_total,
+                    "predict_errors": m.predict_errors,
+                    "predict_schema_errors": m.predict_schema_errors,
+                    "predict_latency_count": m.predict_latency_count,
+                    "batch_predict_total": m.batch_predict_total,
+                    "batch_predict_errors": m.batch_predict_errors,
+                    "reload_total": m.reload_total,
+                    "reload_errors": m.reload_errors,
+                    "model_loaded": m.model_loaded,
+                    "last_reload_unixtime": m.last_reload_unixtime,
+                    "predict_avg_latency_ms": round(avg_lat, 2),
+                },
+                "server_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+        )
 
     return flask_app
 
