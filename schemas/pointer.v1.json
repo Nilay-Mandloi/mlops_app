@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mlops.internal/pointer.v1.json",
+  "title": "PointerFile",
+  "description": "Mutable channel pointer (stable.json / latest.json / canary.json). Flipped atomically on promotion. Consumers poll this file and reload when version_id changes.",
+  "type": "object",
+  "required": [
+    "category",
+    "project",
+    "model_name",
+    "version",
+    "version_id",
+    "run_id",
+    "registry_version",
+    "manifest_uri",
+    "status",
+    "updated_at",
+    "schema_version"
+  ],
+  "properties": {
+    "category": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,30}$",
+      "description": "Top-level namespace (e.g. mlops, llmops, data_engineering)."
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$",
+      "description": "Tenant/project identifier under a category (e.g. product_DQ). Replaces the legacy app_id."
+    },
+    "model_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$",
+      "description": "Logical model name within a project (e.g. sentiment_analysis)."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Numeric version. Maps 1:1 to the v{N} folder suffix."
+    },
+    "version_id": {
+      "type": "string",
+      "pattern": "^v[1-9][0-9]*$",
+      "description": "String form of version (v1, v2, ...). Redundant with `version` for human readability."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "MLflow run id that produced this artifact."
+    },
+    "registry_version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "MLflow Model Registry version number for the registered model."
+    },
+    "manifest_uri": {
+      "type": "string",
+      "pattern": "^s3://[^/]+/.+manifest\\.json$",
+      "description": "Absolute S3 URI of the immutable manifest.json for this version."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["stable", "candidate", "canary", "shadow"]
+    },
+    "mlflow_tracking_uri": {
+      "type": "string",
+      "format": "uri",
+      "description": "MLflow tracking server URL at promotion time. Captured because servers move."
+    },
+    "mlflow_run_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Deep link to the run in the MLflow UI."
+    },
+    "mlflow_model_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Deep link to the registered model version in the MLflow UI."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "promoted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "promoted_by": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    }
+  },
+  "additionalProperties": false
+}

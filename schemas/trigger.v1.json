@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mlops.internal/trigger.v1.json",
+  "title": "TriggerFile",
+  "description": "Input contract for a training run. Written by an orchestrator (REST app, CI, manual) to triggers/{category}/{project}/{trigger_id}/trigger.json. Training picks it up, reads dataset_uri + params_uri, runs the pipeline, publishes artifacts.",
+  "type": "object",
+  "required": [
+    "trigger_id",
+    "category",
+    "project",
+    "model_name",
+    "model_family",
+    "dataset_uri",
+    "params_uri",
+    "dataset_format",
+    "created_at",
+    "schema_version"
+  ],
+  "properties": {
+    "trigger_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "category": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,30}$"
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+    },
+    "model_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+    },
+    "model_family": {
+      "type": "string",
+      "enum": ["regression", "classification", "forecasting", "clustering", "ranking", "nlp", "vision", "other"]
+    },
+    "dataset_uri": {
+      "type": "string",
+      "pattern": "^s3://[^/]+/.+\\.(csv|parquet)$"
+    },
+    "params_uri": {
+      "type": "string",
+      "pattern": "^s3://[^/]+/.+\\.ya?ml$"
+    },
+    "dataset_format": {
+      "type": "string",
+      "enum": ["csv", "parquet"]
+    },
+    "requested_by": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "description": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    }
+  },
+  "additionalProperties": false
+}

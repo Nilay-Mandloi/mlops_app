@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mlops.internal/manifest.v1.json",
+  "title": "ArtifactManifest",
+  "description": "Immutable per-version metadata. Sits next to model.pkl in S3 at {category}-artifacts/{project}/{model_name}/v{N}/manifest.json. artifact_checksums is the authoritative checksum source; consumers MUST verify sha256(model.pkl) against artifact_checksums['model.pkl'] before serving.",
+  "type": "object",
+  "required": [
+    "category",
+    "project",
+    "model_name",
+    "version",
+    "run_id",
+    "registry_version",
+    "model_type",
+    "schema_hash",
+    "artifact_checksums",
+    "published_at",
+    "schema_version"
+  ],
+  "properties": {
+    "category": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,30}$"
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+    },
+    "model_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registry_version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "model_type": {
+      "type": "string",
+      "description": "Concrete framework/algorithm (e.g. xgboost, ridge, random_forest, lightgbm)."
+    },
+    "schema_hash": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Hash of the feature schema used at training time. Consumers compare against their own schema before predicting."
+    },
+    "schema_contract": {
+      "type": "object",
+      "description": "Full feature schema (feature_columns, target_column, dtypes, etc.) frozen at train time."
+    },
+    "artifact_checksums": {
+      "type": "object",
+      "patternProperties": {
+        "^[A-Za-z0-9_.-]+$": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "sha256 hex digest."
+        }
+      },
+      "minProperties": 1,
+      "description": "Filename -> sha256 hex. Must include 'model.pkl'."
+    },
+    "published_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "mlflow_tracking_uri": {
+      "type": "string",
+      "format": "uri"
+    },
+    "mlflow_run_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "mlflow_model_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "git_commit": {
+      "type": ["string", "null"]
+    },
+    "code_version": {
+      "type": ["string", "null"]
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {"type": "number"},
+      "description": "Test/validation metrics frozen at promotion time."
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    }
+  },
+  "additionalProperties": false
+}

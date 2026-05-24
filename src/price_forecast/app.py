@@ -31,9 +31,8 @@ import time
 import uuid
 from functools import wraps
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-import boto3
 import pandas as pd
 import typer
 from flask import Flask, Response, g, jsonify, make_response, render_template, request
@@ -41,6 +40,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from price_forecast.config import AppConfig, load_config
+from price_forecast.factories import get_artifact_store
 from price_forecast.layout import (
     pointer_key,
     trigger_failure_key,
@@ -49,6 +49,7 @@ from price_forecast.layout import (
 )
 from price_forecast.loader import ModelStore
 from price_forecast.metrics import Metrics
+from price_forecast.ports.storage import ReadOnlyArtifactStore
 from price_forecast.publisher import publish_trigger
 from price_forecast.schemas import (
     BatchPredictRequest,
@@ -81,7 +82,8 @@ def _configure_logging(cfg: AppConfig) -> None:
                 "ts": record["time"].isoformat(),
                 "level": record["level"].name,
                 "msg": record["message"],
-                "app_id": cfg.app_id,
+                "project": cfg.project,
+                "model_name": cfg.model_name,
                 "module": record["name"],
             }
             if record["exception"]:
@@ -265,24 +267,37 @@ def _start_background_reloader(
 # ---------------------------------------------------------------------------
 
 
-def _s3_download_to_dir(s3_uri: str, suffix: str, dest_dir: Path, aws_region: str) -> Path:
-    """Download an s3://bucket/key URI to a temp file inside dest_dir.
+def _store_download_to_dir(s3_uri: str, suffix: str, dest_dir: Path, cfg: AppConfig) -> Path:
+    """Download a user-supplied s3://bucket/key URI to a temp file inside dest_dir.
 
-    dest_dir must already exist (caller ensures it is within TRIGGER_DATA_ROOT
-    so the path-traversal guard in TriggerTrainRequest still holds).
-    suffix is the file extension including the dot, e.g. '.yaml' or '.parquet'.
-    Returns the local Path of the downloaded file.
+    The URI's bucket may differ from cfg.bucket (user-provided), so a
+    one-shot ReadOnlyArtifactStore is built for it via the storage factory.
+    suffix is the file extension including the dot.
     """
-    parts = s3_uri[5:].split("/", 1)  # strip "s3://"
-    bucket, key = parts[0], parts[1]
+    if not s3_uri.startswith("s3://"):
+        raise ValueError(f"expected s3:// URI, got {s3_uri!r}")
+    bucket, _, key = s3_uri[5:].partition("/")
+    if not bucket or not key:
+        raise ValueError(f"malformed s3 URI: {s3_uri!r}")
+
+    from price_forecast.factories import get_artifact_store
+
+    one_shot_cfg = replace_app_config(cfg, bucket=bucket, prefix="")
+    transient = get_artifact_store(one_shot_cfg)
     with tempfile.NamedTemporaryFile(dir=dest_dir, suffix=suffix, delete=False) as tmp:
         dest = Path(tmp.name)
     try:
-        boto3.client("s3", region_name=aws_region).download_file(bucket, key, str(dest))
+        transient.download_file(key, dest)
     except Exception:
         dest.unlink(missing_ok=True)
         raise
     return dest
+
+
+def replace_app_config(cfg: AppConfig, **overrides) -> AppConfig:
+    from dataclasses import replace
+
+    return replace(cfg, **overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -290,12 +305,19 @@ def _s3_download_to_dir(s3_uri: str, suffix: str, dest_dir: Path, aws_region: st
 # ---------------------------------------------------------------------------
 
 
-def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) -> Flask:
+def create_app(
+    cfg: AppConfig | None = None,
+    store: ModelStore | None = None,
+    artifact_store: ReadOnlyArtifactStore | None = None,
+) -> Flask:
     cfg = cfg or load_config()
     _configure_logging(cfg)
     metrics = Metrics()
 
-    store = store or ModelStore(cfg)
+    if artifact_store is None:
+        artifact_store = get_artifact_store(cfg)
+    if store is None:
+        store = ModelStore(cfg, artifact_store)
     # Graceful startup: if the pointer is absent (first deploy, training
     # hasn't produced a stable.json yet), do NOT crash. Background reloader
     # will pick it up once it appears; /predict returns 503 in the meantime.
@@ -309,12 +331,11 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
         logger.info("Boot: loaded model {} at startup.", initial.version_id)
     else:
         logger.warning(
-            "Boot: no pointer at s3://{}/{}/output/registry/{}/{}/pointers/{}.json — "
+            "Boot: no pointer at s3://{}/{}/{}/{}.json — "
             "starting in standby. Background reloader will retry every {}s "
             "for up to {}s before logs escalate.",
             cfg.bucket,
-            cfg.stack_id,
-            cfg.app_id,
+            cfg.project,
             cfg.model_name,
             cfg.channel,
             cfg.reload_interval_s,
@@ -357,7 +378,7 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
                 elapsed_ms,
                 g.request_id,
                 response.headers["X-Model-Version"],
-                cfg.app_id,
+                f"{cfg.project}/{cfg.model_name}",
             )
         except Exception as exc:
             logger.warning("request logging hook failed: {}", exc)
@@ -379,16 +400,40 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
 
     @flask_app.get("/ready")
     def ready():
+        """Ready iff the configured target is loaded and reflects the live pointer.
+
+        - process_alive: always true once Flask is serving.
+        - model_loaded:  true once try_reload() or background reloader has produced
+          a LoadedModel.
+        - target:        the (category, project, model_name, channel) this app
+          is configured to serve, so dashboards can disambiguate which target
+          a 503 refers to in multi-tenant deployments.
+        """
         loaded = store.current_or_none()
+        body = {
+            "process_alive": True,
+            "model_loaded": loaded is not None,
+            "target": {
+                "category": cfg.category,
+                "project": cfg.project,
+                "model_name": cfg.model_name,
+                "channel": cfg.channel,
+            },
+            "version": loaded.version_id if loaded else None,
+        }
         if loaded is None:
-            return jsonify(status="standby", reason="no model loaded yet"), 503
-        return jsonify(status="ready", version=loaded.version_id)
+            body["status"] = "standby"
+            body["reason"] = "no model loaded yet"
+            return jsonify(body), 503
+        body["status"] = "ready"
+        return jsonify(body)
 
     @flask_app.get("/metrics")
     def prometheus_metrics():
         loaded = store.current_or_none()
         body = metrics.render(
-            app_id=cfg.app_id,
+            project=cfg.project,
+            model_name=cfg.model_name,
             model_version=loaded.version_id if loaded else "none",
         )
         return Response(body, mimetype="text/plain; version=0.0.4")
@@ -534,14 +579,12 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
                 dest_dir.mkdir(parents=True, exist_ok=True)
 
                 dataset_ext = "." + payload.dataset_s3_uri.rsplit(".", 1)[-1].lower()
-                dataset_path = _s3_download_to_dir(
-                    payload.dataset_s3_uri, dataset_ext, dest_dir, cfg.aws_region
+                dataset_path = _store_download_to_dir(
+                    payload.dataset_s3_uri, dataset_ext, dest_dir, cfg
                 )
                 tmp_files.append(dataset_path)
 
-                params_path = _s3_download_to_dir(
-                    payload.params_s3_uri, ".yaml", dest_dir, cfg.aws_region
-                )
+                params_path = _store_download_to_dir(payload.params_s3_uri, ".yaml", dest_dir, cfg)
                 tmp_files.append(params_path)
             else:
                 # ── Local mode: paths already validated by TriggerTrainRequest ──
@@ -597,7 +640,7 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
         if not _TRIGGER_ID_RE.match(trigger_id):
             return jsonify(error="invalid trigger_id format"), 400
 
-        trigger_data = store._get_json(trigger_metadata_key(cfg.app_id, trigger_id))
+        trigger_data = artifact_store.get_json(trigger_metadata_key(cfg.project, trigger_id))
         if trigger_data is None:
             return jsonify(error=f"trigger {trigger_id!r} not found"), 404
 
@@ -606,7 +649,7 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
         #   running.json present → "running" (transient; keep polling)
         #   neither              → "pending" (dispatch enqueued, worker not yet started)
         # "completed" is checked last after pointer comparison.
-        failure_data = store._get_json(trigger_failure_key(cfg.app_id, trigger_id))
+        failure_data = artifact_store.get_json(trigger_failure_key(cfg.project, trigger_id))
         if failure_data is not None:
             return jsonify(
                 trigger_id=trigger_id,
@@ -616,11 +659,13 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
                 current_version_updated_at=None,
             )
 
-        running_data = store._get_json(trigger_running_key(cfg.app_id, trigger_id))
+        running_data = artifact_store.get_json(trigger_running_key(cfg.project, trigger_id))
 
         baseline_version_id = request.args.get("baseline", "").strip() or None
 
-        pointer_data = store._get_json(pointer_key(cfg.app_id, cfg.model_name, cfg.channel))
+        pointer_data = artifact_store.get_json(
+            pointer_key(cfg.project, cfg.model_name, cfg.channel)
+        )
         if pointer_data is None:
             return jsonify(
                 trigger_id=trigger_id,
@@ -673,7 +718,9 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
         token = request.headers.get("X-Admin-Token", "")
         if not token or not hmac.compare_digest(token, cfg.admin_token):
             return Response(_ADMIN_LOGIN_HTML, mimetype="text/html")
-        resp = make_response(render_template("admin.html", token=token, app_id=cfg.app_id))
+        resp = make_response(
+            render_template("admin.html", token=token, app_id=f"{cfg.project}/{cfg.model_name}")
+        )
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
         )
@@ -710,11 +757,12 @@ def create_app(cfg: AppConfig | None = None, store: ModelStore | None = None) ->
             {
                 "model": model_section,
                 "app": {
-                    "app_id": cfg.app_id,
-                    "env": cfg.env,
+                    "category": cfg.category,
+                    "project": cfg.project,
                     "model_name": cfg.model_name,
+                    "env": cfg.env,
                     "bucket": cfg.bucket,
-                    "stack_id": cfg.stack_id,
+                    "prefix": cfg.prefix,
                     "channel": cfg.channel,
                 },
                 "metrics": {
@@ -746,8 +794,8 @@ cli_app = typer.Typer()
 
 @cli_app.command()
 def serve(
-    host: Optional[str] = typer.Option(None, "--host"),  # noqa: B008, UP045
-    port: Optional[int] = typer.Option(None, "--port"),  # noqa: B008, UP045
+    host: str | None = typer.Option(None, "--host"),  # noqa: B008, UP045
+    port: int | None = typer.Option(None, "--port"),  # noqa: B008, UP045
 ) -> None:
     """Start the Flask development server (use gunicorn in production)."""
     cfg = load_config()

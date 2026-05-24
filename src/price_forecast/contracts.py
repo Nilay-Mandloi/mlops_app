@@ -1,23 +1,23 @@
 """Data contracts that span the training/serving boundary.
 
-These dataclasses define the *exact* JSON shape of the files that move
-between the training repo and any consumer app (Flask, batch job, stream
-processor). They are the single source of truth for what fields exist on
-manifest.json, stable.json / latest.json (pointers), and trigger.json.
-
-When the Flask app is moved to its own repo, these dataclasses (plus the
-layout module) form the shared contract. Two repos that pin the same
-versioned copy of this file cannot drift on schema. The serving repo
-implements its own resolver against this contract; nothing in this
-repo needs to read pointer files.
+These dataclasses mirror the JSON Schemas in ``schemas/*.v1.json`` exactly.
+The schemas are the source of truth; these classes are a Python convenience
+for producers/consumers in this repo. The same schemas live at
+``s3://{bucket}/_schemas/`` so any language can validate the same files.
 
 Versioning rules
 ----------------
-- Adding an *optional* field is a non-breaking change.
-- Renaming or removing a field is a breaking change — bump the
-  ``SCHEMA_VERSION`` constant and update consumers.
-- Producers should always emit the latest schema; consumers should tolerate
-  missing optional fields for forward-compat.
+- Adding an *optional* field is non-breaking. Bump nothing.
+- Renaming or removing a field is breaking: cut a new ``schemas/X.v2.json``,
+  introduce a new dataclass, and run both in parallel during migration.
+- ``schema_version`` is pinned to the schema file version, not edited freely.
+
+Identifier model
+----------------
+Tenants are identified by ``(category, project, model_name)``. ``category``
+also encodes the bucket name (``{category}-artifacts``). Inside a project,
+each model has its own version sequence ``v1, v2, ...`` independent of
+MLflow's registry version counter.
 """
 
 from __future__ import annotations
@@ -33,46 +33,44 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ---------------------------------------------------------------------------
-# Manifest — written once per artifact version, immutable.
-# Path: output/artifacts/v{N}/champion/manifest.json
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class ArtifactManifest:
     """Immutable per-version metadata. Sits next to model.pkl in S3.
 
-    artifact_checksums is the authoritative checksum source. Consumers MUST
-    verify sha256(model.pkl) against artifact_checksums["model.pkl"] before
-    serving — never trust the byte stream alone.
+    Path: ``s3://{category}-artifacts/{project}/{model_name}/v{version}/manifest.json``
 
-    ``app_id`` is mandatory and identifies which app this artifact belongs
-    to. The consumer-side loader cross-checks ``manifest.app_id`` against
-    its configured ``APP_ID`` env var — a mismatched manifest is refused.
+    ``artifact_checksums`` is authoritative — consumers MUST verify
+    ``sha256(model.pkl)`` against ``artifact_checksums["model.pkl"]`` before
+    serving. Mismatched (category, project, model_name) on read = reject.
     """
 
-    app_id: str
-    run_id: str
-    artifact_version: str
-    registry_version: str
+    category: str
+    project: str
     model_name: str
+    version: int
+    run_id: str
+    registry_version: str
     model_type: str
     schema_hash: str
+    artifact_checksums: dict[str, str]
     schema_contract: dict[str, Any] = field(default_factory=dict)
-    registry_uri: str = ""
-    artifact_checksums: dict[str, str] = field(default_factory=dict)
     published_at: str = ""
-    schema_version: str = SCHEMA_VERSION
+    # Legacy field names — populated by ANY ExperimentTracker adapter, not just
+    # MLflow. The names are kept stable to avoid a cross-repo schema break;
+    # treat their values as opaque backend-specific URLs.
+    mlflow_tracking_uri: str | None = None
+    mlflow_run_url: str | None = None
+    mlflow_model_url: str | None = None
     git_commit: str | None = None
     code_version: str | None = None
     metrics: dict[str, float] = field(default_factory=dict)
+    schema_version: str = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         if not d.get("published_at"):
             d["published_at"] = _utcnow_iso()
-        return d
+        return {k: v for k, v in d.items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ArtifactManifest:
@@ -80,33 +78,33 @@ class ArtifactManifest:
         return cls(**{k: v for k, v in data.items() if k in allowed})
 
 
-# ---------------------------------------------------------------------------
-# Pointer — mutable. The ONLY thing that flips when a new model is promoted.
-# Path: output/registry/{model}/pointers/{stable|latest|canary}.json
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class PointerFile:
-    """Mutable pointer at a specific channel (stable / latest / canary / ...).
+    """Mutable per-model channel pointer.
 
-    Consumers poll this file (or get notified via S3 Event → SNS) and reload
-    the model when version_id changes. The pointer points at an immutable
-    manifest_uri, which in turn points at an immutable model.pkl.
+    Path: ``s3://{category}-artifacts/{project}/{model_name}/{channel}.json``
+    where channel ∈ {stable, latest, canary, shadow}.
 
-    ``app_id`` is mandatory. A pointer payload travelling between training
-    and serving carries its app scope explicitly so consumers can detect
-    misrouted files (e.g. a copy-paste typo putting app1's pointer in
-    app2's path).
+    Flipped atomically inside the promotion lock. Consumers poll this file
+    (or get notified via S3 events) and reload when ``version`` changes.
     """
 
-    app_id: str
+    category: str
+    project: str
+    model_name: str
+    version: int
     version_id: str
     run_id: str
     registry_version: str
     manifest_uri: str
-    status: str  # "stable" | "candidate" | "canary" | "shadow"
+    status: str
     updated_at: str = ""
+    # Legacy field names — populated by ANY ExperimentTracker adapter, not just
+    # MLflow. The names are kept stable to avoid a cross-repo schema break;
+    # treat their values as opaque backend-specific URLs.
+    mlflow_tracking_uri: str | None = None
+    mlflow_run_url: str | None = None
+    mlflow_model_url: str | None = None
     promoted_at: str | None = None
     promoted_by: str | None = None
     schema_version: str = SCHEMA_VERSION
@@ -115,12 +113,7 @@ class PointerFile:
         d = asdict(self)
         if not d.get("updated_at"):
             d["updated_at"] = _utcnow_iso()
-        # Drop None promoted_at/promoted_by to keep stable.json minimal.
-        if d.get("promoted_at") is None:
-            d.pop("promoted_at", None)
-        if d.get("promoted_by") is None:
-            d.pop("promoted_by", None)
-        return d
+        return {k: v for k, v in d.items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PointerFile:
@@ -128,33 +121,23 @@ class PointerFile:
         return cls(**{k: v for k, v in data.items() if k in allowed})
 
 
-# ---------------------------------------------------------------------------
-# Trigger — written by the consumer app, read by the training pipeline.
-# Path: triggers/{trigger_id}/trigger.json (with dataset.parquet, params.yaml
-# alongside)
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class TriggerFile:
     """Input contract for a training run.
 
-    Written by the Flask app (or any orchestrator) to S3. Training picks it
-    up, reads dataset_uri + params_uri, runs the pipeline, and publishes
-    artifacts back to the same app's bucket.
-
-    dataset_format declares which reader the training side should use
-    (pd.read_csv vs pd.read_parquet etc.). The extension on dataset_uri
-    must agree with this value — the publisher enforces that, and the
-    puller asserts it on the way in.
+    Written by the REST app (or any orchestrator) to
+    ``s3://{category}-artifacts/_triggers/{project}/{trigger_id}/trigger.json``
+    alongside ``dataset.{csv|parquet}`` and ``params.yaml``.
     """
 
     trigger_id: str
-    app_id: str
-    model_family: str  # "regression" | "classification" | "forecasting" | ...
-    dataset_uri: str  # s3://.../triggers/{app_id}/{id}/dataset.{csv|parquet}
-    params_uri: str  # s3://.../triggers/{app_id}/{id}/params.yaml
-    dataset_format: str = "parquet"  # "csv" | "parquet"
+    category: str
+    project: str
+    model_name: str
+    model_family: str
+    dataset_uri: str
+    params_uri: str
+    dataset_format: str = "parquet"
     requested_by: str = ""
     created_at: str = ""
     description: str = ""
@@ -172,16 +155,26 @@ class TriggerFile:
         return cls(**{k: v for k, v in data.items() if k in allowed})
 
 
-# ---------------------------------------------------------------------------
-# Channel names (stable values; do not rename without bumping SCHEMA_VERSION)
-# ---------------------------------------------------------------------------
-
 CHANNEL_STABLE = "stable"
 CHANNEL_LATEST = "latest"
 CHANNEL_CANARY = "canary"
 CHANNEL_SHADOW = "shadow"
 
-POINTER_STATUS_STABLE = "stable"
-POINTER_STATUS_CANDIDATE = "candidate"
-POINTER_STATUS_CANARY = "canary"
-POINTER_STATUS_SHADOW = "shadow"
+VALID_CHANNELS: frozenset[str] = frozenset(
+    {CHANNEL_STABLE, CHANNEL_LATEST, CHANNEL_CANARY, CHANNEL_SHADOW}
+)
+
+VALID_STATUSES: frozenset[str] = frozenset({"stable", "candidate", "canary", "shadow"})
+
+VALID_MODEL_FAMILIES: frozenset[str] = frozenset(
+    {
+        "regression",
+        "classification",
+        "forecasting",
+        "clustering",
+        "ranking",
+        "nlp",
+        "vision",
+        "other",
+    }
+)

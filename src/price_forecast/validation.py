@@ -96,7 +96,7 @@ def validate_features(
     def _is_null(v: Any) -> bool:
         if v is None:
             return True
-        if isinstance(v, (str, bool, list, dict, tuple, bytes)):
+        if isinstance(v, str | bool | list | dict | tuple | bytes):
             return False
         try:
             return bool(math.isnan(v))

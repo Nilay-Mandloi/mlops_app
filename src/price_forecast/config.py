@@ -1,7 +1,7 @@
 """Runtime config for the serving app, loaded from environment.
 
-The training repo's settings.py is intentionally NOT imported here. This
-keeps the two repos decoupled — each owns its own config surface.
+The training repo's settings.py is intentionally NOT imported here. Both
+repos own their own config surface independently.
 """
 
 from __future__ import annotations
@@ -10,7 +10,9 @@ import os
 import re
 from dataclasses import dataclass
 
-_APP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+_CATEGORY_RE = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
+_PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+_MODEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -28,41 +30,32 @@ def _parse_int(name: str, value: str) -> int:
     try:
         return int(value)
     except ValueError:
-        raise OSError(
-            f"{name} must be an integer; got {value!r}. Check the {name} environment variable."
-        ) from None
+        raise OSError(f"{name} must be an integer; got {value!r}.") from None
 
 
 @dataclass(frozen=True)
 class AppConfig:
-    app_id: str
-    bucket: str
-    stack_id: str
+    category: str
+    project: str
     model_name: str
+    bucket: str
+    prefix: str
     channel: str  # which pointer to follow: stable | canary | latest
     aws_region: str
     admin_token: str
     reload_interval_s: int
     host: str
     port: int
-    # Production knobs
-    max_batch_size: int  # cap on /predict/batch rows
-    max_request_bytes: int  # cap on request body size
-    cors_allowed_origins: str  # comma-separated list; "*" only allowed when ENV!=prod
+    max_batch_size: int
+    max_request_bytes: int
+    cors_allowed_origins: str
     env: str  # "dev" | "prod" | "test"
-    log_format: str  # "" (default loguru) | "json"
-    strict_schema: bool  # if True, reject requests whose features don't match manifest schema
-    startup_grace_seconds: int  # serve 503 for this long if pointer absent, instead of crashing
-    # Training dispatch — fire a repository_dispatch to the training repo after /trigger-train.
-    # Both must be set; if either is empty the dispatch is silently skipped (backward compatible).
-    training_repo: str  # env: TRAINING_REPO  (e.g. "my-org/mlops")
-    training_repo_token: str  # env: TRAINING_REPO_TOKEN  (PAT with Contents:write on training repo)
-    training_auto_promote: bool  # env: TRAINING_AUTO_PROMOTE  (default false)
-
-    @property
-    def prefix(self) -> str:
-        """Full S3 prefix this app reads from: e.g. 'MLOPS' or 'azure'."""
-        return self.stack_id
+    log_format: str
+    strict_schema: bool
+    startup_grace_seconds: int
+    training_repo: str
+    training_repo_token: str
+    training_auto_promote: bool
 
 
 def _parse_bool(value: str, *, default: bool) -> bool:
@@ -75,14 +68,26 @@ def load_config() -> AppConfig:
     channel = _env("APP_CHANNEL", "stable")
     if channel not in {"stable", "canary", "latest"}:
         raise OSError("APP_CHANNEL must be one of stable, canary, latest.")
-    raw_app_id = _require("APP_ID")
-    if not _APP_ID_RE.match(raw_app_id):
-        raise ValueError(f"APP_ID must match ^[a-z0-9][a-z0-9_-]{{0,62}}$; got {raw_app_id!r}")
+
+    category = _require("CATEGORY")
+    project = _require("PROJECT")
+    model_name = _require("MODEL_NAME")
+    if not _CATEGORY_RE.match(category):
+        raise ValueError(f"CATEGORY must match {_CATEGORY_RE.pattern}; got {category!r}")
+    if not _PROJECT_RE.match(project):
+        raise ValueError(f"PROJECT must match {_PROJECT_RE.pattern}; got {project!r}")
+    if not _MODEL_NAME_RE.match(model_name):
+        raise ValueError(f"MODEL_NAME must match {_MODEL_NAME_RE.pattern}; got {model_name!r}")
+
+    bucket = _env("ARTIFACT_STORE_BUCKET") or f"{category}-artifacts"
+    prefix = _env("ARTIFACT_STORE_PREFIX", "")
+
     cfg = AppConfig(
-        app_id=raw_app_id,
-        bucket=_require("APP_S3_BUCKET"),
-        stack_id=_env("STACK_ID", "MLOPS"),
-        model_name=_require("APP_MODEL_NAME"),
+        category=category,
+        project=project,
+        model_name=model_name,
+        bucket=bucket,
+        prefix=prefix,
         channel=channel,
         aws_region=_env("AWS_DEFAULT_REGION", "us-east-1"),
         admin_token=_env("APP_ADMIN_TOKEN"),
@@ -107,22 +112,15 @@ def load_config() -> AppConfig:
 
     if cfg.env == "prod":
         if not cfg.admin_token:
-            raise OSError(
-                "APP_ADMIN_TOKEN is required in prod (guards /reload and /trigger-train)."
-            )
+            raise OSError("APP_ADMIN_TOKEN is required in prod.")
         if "*" in cfg.cors_allowed_origins:
             raise OSError("APP_CORS_ALLOWED_ORIGINS must not contain '*' in prod.")
         if cfg.channel != "stable":
             raise OSError("APP_CHANNEL must be 'stable' in prod.")
         if not cfg.training_repo or not cfg.training_repo_token:
-            raise OSError(
-                "TRAINING_REPO and TRAINING_REPO_TOKEN are both required in prod. "
-                "Set both env vars so /trigger-train can dispatch to the training repo."
-            )
+            raise OSError("TRAINING_REPO and TRAINING_REPO_TOKEN are both required in prod.")
         if not os.environ.get("TRIGGER_DATA_ROOT", "").strip():
-            raise OSError(
-                "TRIGGER_DATA_ROOT is required in prod (guards path traversal in /trigger-train)."
-            )
+            raise OSError("TRIGGER_DATA_ROOT is required in prod (guards path traversal).")
     if cfg.max_batch_size <= 0:
         raise OSError(f"APP_MAX_BATCH_SIZE must be > 0; got {cfg.max_batch_size}.")
     if cfg.max_request_bytes <= 0:

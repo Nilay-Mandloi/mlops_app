@@ -73,8 +73,8 @@ class Metrics:
     # Rendering
     # ------------------------------------------------------------------
 
-    def render(self, *, app_id: str, model_version: str) -> str:
-        labels = f'app_id="{app_id}",model_version="{model_version}"'
+    def render(self, *, project: str, model_name: str, model_version: str) -> str:
+        labels = f'project="{project}",model_name="{model_name}",model_version="{model_version}"'
         lines = [
             "# HELP price_forecast_predict_total Total /predict calls.",
             "# TYPE price_forecast_predict_total counter",
