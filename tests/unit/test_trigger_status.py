@@ -14,14 +14,15 @@ from price_forecast.config import AppConfig
 # ---------------------------------------------------------------------------
 
 _BASE_CFG = AppConfig(
-    app_id="testapp",
-    bucket="test-bucket",
-    stack_id="MLOPS",
+    category="mlops",
+    project="test_project",
     model_name="price_forecast",
+    bucket="test-bucket",
+    prefix="",
     channel="stable",
     aws_region="us-east-1",
     admin_token="secret",
-    reload_interval_s=0,  # disable background reloader in tests
+    reload_interval_s=0,
     host="0.0.0.0",
     port=8000,
     max_batch_size=1000,
@@ -37,14 +38,21 @@ _BASE_CFG = AppConfig(
 )
 
 _VALID_TRIGGER_ID = "20260519T120000Z_abcdef12"
-_TRIGGER_JSON = {"trigger_id": _VALID_TRIGGER_ID, "app_id": "testapp"}
+_TRIGGER_JSON = {
+    "trigger_id": _VALID_TRIGGER_ID,
+    "category": "mlops",
+    "project": "test_project",
+    "model_name": "price_forecast",
+}
 _STABLE_V1 = {
+    "version": 1,
     "version_id": "v1",
     "updated_at": "2026-05-19T11:00:00+00:00",
 }
 _STABLE_V2 = {
+    "version": 2,
     "version_id": "v2",
-    "updated_at": "2026-05-19T13:00:00+00:00",  # after trigger creation
+    "updated_at": "2026-05-19T13:00:00+00:00",
 }
 _ADMIN_HDR = {"X-Admin-Token": "secret"}
 
@@ -58,11 +66,16 @@ def mock_store():
 
 
 @pytest.fixture()
-def client(mock_store):
-    app = create_app(cfg=_BASE_CFG, store=mock_store)
+def mock_artifact_store():
+    return MagicMock()
+
+
+@pytest.fixture()
+def client(mock_store, mock_artifact_store):
+    app = create_app(cfg=_BASE_CFG, store=mock_store, artifact_store=mock_artifact_store)
     app.config["TESTING"] = True
     with app.test_client() as c:
-        yield c, mock_store
+        yield c, mock_artifact_store
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +93,7 @@ def test_invalid_trigger_id_returns_400(client):
 def test_missing_trigger_returns_404(client):
     c, store = client
     # trigger.json absent → _get_json returns None for trigger_metadata_key
-    store._get_json.return_value = None
+    store.get_json.return_value = None
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     assert resp.status_code == 404
     assert _VALID_TRIGGER_ID in resp.get_json()["error"]
@@ -106,7 +119,7 @@ def test_returns_failed_when_failure_marker_exists(client):
             return failure_payload
         return None
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     data = resp.get_json()
     assert resp.status_code == 200
@@ -128,7 +141,7 @@ def test_failed_marker_overrides_completed_pointer(client):
             return _STABLE_V2
         return None
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     assert resp.get_json()["status"] == "failed"
 
@@ -150,7 +163,7 @@ def test_returns_running_when_running_marker_exists_no_pointer(client):
             return {"status": "running", "trigger_id": _VALID_TRIGGER_ID}
         return None  # no stable.json yet
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     data = resp.get_json()
     assert resp.status_code == 200
@@ -172,7 +185,7 @@ def test_returns_running_when_pointer_predates_trigger(client):
             return _STABLE_V1  # updated_at 11:00 < trigger 12:00
         return None
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     assert resp.get_json()["status"] == "running"
 
@@ -190,7 +203,7 @@ def test_failed_overrides_running(client):
             return {"status": "running"}
         return None
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     assert resp.get_json()["status"] == "failed"
 
@@ -208,7 +221,7 @@ def test_returns_pending_when_no_pointer(client):
             return _TRIGGER_JSON
         return None  # failed.json and stable.json both absent
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     data = resp.get_json()
     assert resp.status_code == 200
@@ -228,7 +241,7 @@ def test_returns_pending_with_baseline_when_version_unchanged(client):
             return _STABLE_V1
         return None
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(
         f"/trigger-status/{_VALID_TRIGGER_ID}?baseline=v1",
         headers=_ADMIN_HDR,
@@ -255,7 +268,7 @@ def test_returns_completed_with_baseline_when_version_changed(client):
             return _STABLE_V2
         return None
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(
         f"/trigger-status/{_VALID_TRIGGER_ID}?baseline=v1",
         headers=_ADMIN_HDR,
@@ -279,7 +292,7 @@ def test_returns_completed_via_timestamp_fallback(client):
             return _STABLE_V2
         return None
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     assert resp.get_json()["status"] == "completed"
 
@@ -298,7 +311,7 @@ def test_returns_pending_via_timestamp_fallback_when_pointer_older(client):
             return _STABLE_V1
         return None
 
-    store._get_json.side_effect = _get_json
+    store.get_json.side_effect = _get_json
     resp = c.get(f"/trigger-status/{_VALID_TRIGGER_ID}", headers=_ADMIN_HDR)
     assert resp.get_json()["status"] == "pending"
 

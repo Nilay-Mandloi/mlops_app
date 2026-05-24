@@ -28,7 +28,7 @@ def test_render_contains_all_metrics():
     m = Metrics()
     m.inc_predict(5.0, ok=True)
     m.set_model_loaded(True)
-    body = m.render(app_id="test_app", model_version="v42")
+    body = m.render(project="product_dq", model_name="price_forecast", model_version="v42")
     for needle in (
         "price_forecast_predict_total",
         "price_forecast_predict_errors_total",
@@ -38,7 +38,8 @@ def test_render_contains_all_metrics():
         "price_forecast_model_loaded",
         "price_forecast_last_reload_unixtime",
         "price_forecast_predict_latency_sum_ms",
-        'app_id="test_app"',
+        'project="product_dq"',
+        'model_name="price_forecast"',
         'model_version="v42"',
         "# HELP",
         "# TYPE",
@@ -47,9 +48,7 @@ def test_render_contains_all_metrics():
 
 
 def test_render_is_prometheus_parseable_shape():
-    """Smoke check: line count matches metric count, no double-blank lines."""
-    body = Metrics().render(app_id="x", model_version="none")
+    body = Metrics().render(project="p", model_name="m", model_version="none")
     lines = body.splitlines()
-    # 10 metrics * (HELP + TYPE + 1 series) = 30; allow trailing blank.
     assert len(lines) >= 30
     assert "" not in lines[:-1] or lines.count("") <= 1
